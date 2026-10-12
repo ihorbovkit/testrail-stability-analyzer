@@ -348,7 +348,9 @@ class TestRailClient:
                 if delay is None:
                     raise
                 last_error = exc
-                self._sleep(delay)
+                # Without budget for another attempt, the check above raises; don't wait first.
+                if self._requests_made < self._http.max_requests_per_execution:
+                    self._sleep(delay)
                 continue
             try:
                 return json.loads(response.body)

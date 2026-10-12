@@ -82,6 +82,15 @@ class RateLimitRetryTests(unittest.TestCase):
         self.assertEqual(retry.client.requests_made, 2)
         self.assertIn("while retrying", str(ctx.exception))
         self.assertIsInstance(ctx.exception.__cause__, TestRailRateLimitError)
+        self.assertEqual(retry.sleeps, [1.0])  # no wait before the attempt that cannot be sent
+
+    def test_no_wait_when_last_budgeted_request_fails(self):
+        for response in (rate_limited("60"), rate_limited(), TransportError("connection reset")):
+            retry = RetryClient(response, ok({}), max_requests_per_execution=1, max_retry_delay_seconds=60)
+            with self.subTest(response=response), self.assertRaises(TestRailRequestBudgetExceeded):
+                retry.client.get("get_case/1")
+            self.assertEqual(retry.sleeps, [])
+            self.assertEqual(len(retry.transport.calls), 1)
 
     def test_retry_during_pagination(self):
         retry = RetryClient(

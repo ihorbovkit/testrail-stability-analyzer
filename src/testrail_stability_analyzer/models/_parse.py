@@ -50,9 +50,12 @@ class Fields:
         return ModelError(f"{self._entity}.{key}: expected {expected}, got {type(value).__name__}")
 
     def id(self, key: str = "id") -> int:
+        """A required TestRail ID (positive integer)."""
         value = self.integer(key)
         if value is None:
             raise ModelError(f"{self._entity}.{key} is required")
+        if value < 1:
+            raise ModelError(f"{self._entity}.{key}: expected a positive ID, got {value}")
         return value
 
     def integer(self, key: str) -> int | None:

@@ -1,12 +1,12 @@
 import base64
-import json
 import unittest
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 from testrail_stability_analyzer.api import (
     HttpResponse,
     TestRailAuthenticationError,
     TestRailAuthorizationError,
-    TestRailClient,
     TestRailError,
     TestRailHTTPError,
     TestRailNetworkError,
@@ -17,48 +17,8 @@ from testrail_stability_analyzer.api import (
     TransportError,
     TransportTimeout,
 )
-from testrail_stability_analyzer.config import Credentials, settings_from_mapping
 
-FAKE_USER = "user@example.invalid"
-FAKE_KEY = "fake-api-key-0000"
-
-
-class FakeTransport:
-    """Records requests and replays queued responses or exceptions."""
-
-    def __init__(self, *responses):
-        self.responses = list(responses)
-        self.calls = []
-
-    def get(self, url, headers, *, connect_timeout, read_timeout):
-        self.calls.append({"url": url, "headers": dict(headers), "connect": connect_timeout, "read": read_timeout})
-        response = self.responses.pop(0)
-        if isinstance(response, Exception):
-            raise response
-        return response
-
-
-class FakeCredentialProvider:
-    def __init__(self):
-        self.calls = 0
-
-    def get_credentials(self):
-        self.calls += 1
-        return Credentials(username=FAKE_USER, api_key=FAKE_KEY)
-
-
-def ok(payload, status=200, headers=None):
-    return HttpResponse(status=status, body=json.dumps(payload).encode(), headers=headers or {})
-
-
-def make_client(*responses, base_url="https://example.testrail.io", http=None):
-    settings = settings_from_mapping(
-        {"testrail": {"base_url": base_url, "project_id": 1}, "http": http or {"max_requests_per_execution": 50}}
-    )
-    transport = FakeTransport(*responses)
-    credentials = FakeCredentialProvider()
-    return TestRailClient(settings, credentials, transport), transport, credentials
-
+from .fakes import FAKE_KEY, FAKE_USER, make_client, ok
 
 class UrlConstructionTests(unittest.TestCase):
     def test_build_url(self):
@@ -89,7 +49,12 @@ class ReadOnlyTests(unittest.TestCase):
     def test_client_exposes_no_write_methods(self):
         client, _, _ = make_client()
         public = {name for name in dir(client) if not name.startswith("_")}
-        self.assertEqual(public, {"build_url", "get", "get_paginated", "requests_made"})
+        endpoints = {
+            "get_project", "get_suites", "get_cases", "get_case_fields", "get_case_types", "get_statuses",
+            "get_result_fields", "get_plans", "get_plan", "get_runs", "get_run", "get_tests",
+            "get_results_for_run", "get_results_for_case",
+        }  # fmt: skip
+        self.assertEqual(public, {"build_url", "get", "get_paginated", "requests_made"} | endpoints)
         for prefix in ("post", "put", "patch", "delete", "add", "update", "close_", "send"):
             self.assertFalse(any(name.startswith(prefix) for name in public), prefix)
 
@@ -185,8 +150,16 @@ class ErrorHandlingTests(unittest.TestCase):
         error = self.assert_raises_from(ok({}, status=429), TestRailRateLimitError)
         self.assertIsNone(error.retry_after_seconds)
 
-    def test_negative_retry_after_clamped_to_zero(self):
+    def test_negative_retry_after_is_invalid(self):
         error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": "-5"}), TestRailRateLimitError)
+        self.assertIsNone(error.retry_after_seconds)
+
+    def test_retry_after_http_date(self):
+        future = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": future}), TestRailRateLimitError)
+        self.assertTrue(25 <= error.retry_after_seconds <= 30, error.retry_after_seconds)
+        past = "Wed, 21 Oct 2015 07:28:00 GMT"
+        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": past}), TestRailRateLimitError)
         self.assertEqual(error.retry_after_seconds, 0.0)
 
     def test_other_http_errors(self):

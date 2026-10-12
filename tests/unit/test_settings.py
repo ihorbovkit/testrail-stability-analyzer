@@ -33,6 +33,9 @@ class RequiredSettingsTests(unittest.TestCase):
         self.assertEqual(settings.http.connect_timeout_seconds, 10.0)
         self.assertEqual(settings.http.read_timeout_seconds, 30.0)
         self.assertEqual(settings.http.max_requests_per_execution, 1000)
+        self.assertEqual(settings.http.max_retries, 3)
+        self.assertEqual(settings.http.retry_backoff_seconds, 1.0)
+        self.assertEqual(settings.http.max_retry_delay_seconds, 60.0)
 
     def test_missing_required_settings_are_all_reported(self):
         with self.assertRaises(ConfigurationError) as ctx:
@@ -119,10 +122,26 @@ class HistoryAndHttpTests(unittest.TestCase):
             {"http": {"connect_timeout_seconds": 0}},
             {"http": {"read_timeout_seconds": "slow"}},
             {"http": {"max_requests_per_execution": 0}},
+            {"http": {"max_retries": -1}},
+            {"http": {"max_retries": 1.5}},
+            {"http": {"retry_backoff_seconds": 0}},
+            {"http": {"max_retry_delay_seconds": "inf"}},
         ]
         for sections in cases:
             with self.subTest(sections=sections), self.assertRaises(ConfigurationError):
                 settings_from_mapping(minimal(**sections))
+
+    def test_retry_settings(self):
+        settings = settings_from_mapping(
+            minimal(http={"max_retries": 0, "retry_backoff_seconds": 0.5, "max_retry_delay_seconds": 5})
+        )
+        self.assertEqual(
+            (settings.http.max_retries, settings.http.retry_backoff_seconds, settings.http.max_retry_delay_seconds),
+            (0, 0.5, 5.0),
+        )
+        with self.assertRaises(ConfigurationError) as ctx:
+            settings_from_mapping(minimal(http={"retry_backoff_seconds": 10, "max_retry_delay_seconds": 5}))
+        self.assertIn("http.max_retry_delay_seconds must be >= http.retry_backoff_seconds", ctx.exception.errors)
 
     def test_non_finite_timeouts_are_rejected(self):
         for key in ("connect_timeout_seconds", "read_timeout_seconds"):
@@ -207,6 +226,7 @@ class MappingTests(unittest.TestCase):
     def test_invalid_status_mappings(self):
         cases = [
             {"flaky": ["x"]},
+            {"unknown": ["x"]},
             {"failed": "failed"},
             {"failed": [0]},
             {"failed": [True]},
@@ -262,6 +282,21 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(settings.history.window_days, 14)
         self.assertEqual(settings.history.max_runs, 3)
         self.assertIsNone(settings.testrail.suite_id)
+
+    def test_retry_settings_from_environment(self):
+        settings = load_settings(
+            environ={
+                "TESTRAIL_BASE_URL": "https://env.example",
+                "TESTRAIL_PROJECT_ID": "4",
+                "TESTRAIL_HTTP_MAX_RETRIES": "5",
+                "TESTRAIL_HTTP_RETRY_BACKOFF_SECONDS": "0.25",
+                "TESTRAIL_HTTP_MAX_RETRY_DELAY_SECONDS": "8",
+            }
+        )
+        self.assertEqual(
+            (settings.http.max_retries, settings.http.retry_backoff_seconds, settings.http.max_retry_delay_seconds),
+            (5, 0.25, 8.0),
+        )
 
     def test_invalid_environment_value(self):
         with self.assertRaises(ConfigurationError) as ctx:

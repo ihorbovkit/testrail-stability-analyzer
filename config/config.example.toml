@@ -22,6 +22,12 @@ max_runs = 10
 connect_timeout_seconds = 10.0
 read_timeout_seconds = 30.0
 max_requests_per_execution = 1000
+# Bounded retries for HTTP 429/502/503/504 and network failures. Retry-After is
+# honoured; otherwise the delay doubles from retry_backoff_seconds, capped at
+# max_retry_delay_seconds. Every attempt counts against max_requests_per_execution.
+max_retries = 3
+retry_backoff_seconds = 1.0
+max_retry_delay_seconds = 60.0
 
 [naming]
 # Optional regular expressions; empty lists include all plans/runs.

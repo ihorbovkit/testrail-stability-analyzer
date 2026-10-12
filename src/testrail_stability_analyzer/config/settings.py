@@ -26,6 +26,9 @@ DEFAULT_LOOKBACK_LIMIT_DAYS: Final[int | None] = None
 DEFAULT_CONNECT_TIMEOUT_SECONDS: Final = 10.0
 DEFAULT_READ_TIMEOUT_SECONDS: Final = 30.0
 DEFAULT_MAX_REQUESTS_PER_EXECUTION: Final = 1000
+DEFAULT_MAX_RETRIES: Final = 3
+DEFAULT_RETRY_BACKOFF_SECONDS: Final = 1.0
+DEFAULT_MAX_RETRY_DELAY_SECONDS: Final = 60.0
 
 # Non-secret settings that may be overridden from the environment.
 ENVIRONMENT_VARIABLES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
@@ -39,6 +42,9 @@ ENVIRONMENT_VARIABLES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
         "TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS": ("http", "connect_timeout_seconds"),
         "TESTRAIL_HTTP_READ_TIMEOUT_SECONDS": ("http", "read_timeout_seconds"),
         "TESTRAIL_HTTP_MAX_REQUESTS": ("http", "max_requests_per_execution"),
+        "TESTRAIL_HTTP_MAX_RETRIES": ("http", "max_retries"),
+        "TESTRAIL_HTTP_RETRY_BACKOFF_SECONDS": ("http", "retry_backoff_seconds"),
+        "TESTRAIL_HTTP_MAX_RETRY_DELAY_SECONDS": ("http", "max_retry_delay_seconds"),
     }
 )
 
@@ -67,6 +73,8 @@ class StatusCategory(StrEnum):
     RETEST = "retest"
     NOT_APPLICABLE = "not_applicable"
     AUTOMATION_ISSUE = "automation_issue"
+    # Assigned when no mapping applies; cannot be configured.
+    UNKNOWN = "unknown"
 
 
 class MatchSource(StrEnum):
@@ -99,6 +107,11 @@ class HttpSettings:
     connect_timeout_seconds: float = DEFAULT_CONNECT_TIMEOUT_SECONDS
     read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS
     max_requests_per_execution: int = DEFAULT_MAX_REQUESTS_PER_EXECUTION
+    # Retries for rate limits (429), temporary server errors (502/503/504) and
+    # network failures. Every attempt counts against max_requests_per_execution.
+    max_retries: int = DEFAULT_MAX_RETRIES
+    retry_backoff_seconds: float = DEFAULT_RETRY_BACKOFF_SECONDS
+    max_retry_delay_seconds: float = DEFAULT_MAX_RETRY_DELAY_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,12 +213,28 @@ class _Parser:
         if lookback is not None and window_days is not None and lookback < window_days:
             self.errors.append("history.lookback_limit_days must be 0 (no limit) or >= history.window_days")
 
-        http = self._section(data, "http", {"connect_timeout_seconds", "read_timeout_seconds", "max_requests_per_execution"})
+        http = self._section(
+            data,
+            "http",
+            {
+                "connect_timeout_seconds",
+                "read_timeout_seconds",
+                "max_requests_per_execution",
+                "max_retries",
+                "retry_backoff_seconds",
+                "max_retry_delay_seconds",
+            },
+        )
         connect_timeout = self._positive_number(http, "connect_timeout_seconds", "http", DEFAULT_CONNECT_TIMEOUT_SECONDS)
         read_timeout = self._positive_number(http, "read_timeout_seconds", "http", DEFAULT_READ_TIMEOUT_SECONDS)
         max_requests = self._integer(
             http, "max_requests_per_execution", "http", default=DEFAULT_MAX_REQUESTS_PER_EXECUTION, minimum=1
         )
+        max_retries = self._integer(http, "max_retries", "http", default=DEFAULT_MAX_RETRIES, minimum=0)
+        backoff = self._positive_number(http, "retry_backoff_seconds", "http", DEFAULT_RETRY_BACKOFF_SECONDS)
+        max_delay = self._positive_number(http, "max_retry_delay_seconds", "http", DEFAULT_MAX_RETRY_DELAY_SECONDS)
+        if max_delay < backoff:
+            self.errors.append("http.max_retry_delay_seconds must be >= http.retry_backoff_seconds")
 
         naming = self._section(data, "naming", {"plan_name_patterns", "run_name_patterns"})
         plan_patterns = self._patterns(naming, "plan_name_patterns", "naming")
@@ -223,7 +252,7 @@ class _Parser:
         return Settings(
             testrail=TestRailSettings(base_url, project_id, suite_id, allow_http),
             history=HistorySettings(window_days, max_runs, lookback),
-            http=HttpSettings(connect_timeout, read_timeout, max_requests),
+            http=HttpSettings(connect_timeout, read_timeout, max_requests, max_retries, backoff, max_delay),
             naming=NamingSettings(plan_patterns, run_patterns),
             mappings=MappingSettings(applications, platforms, custom_fields, statuses),
         )
@@ -417,7 +446,9 @@ class _Parser:
             try:
                 category = StatusCategory(raw_category)
             except ValueError:
-                allowed = ", ".join(c.value for c in StatusCategory)
+                category = StatusCategory.UNKNOWN
+            if category is StatusCategory.UNKNOWN:
+                allowed = ", ".join(c.value for c in StatusCategory if c is not StatusCategory.UNKNOWN)
                 self.errors.append(f"{path}: unknown status category (allowed: {allowed})")
                 continue
             if not isinstance(identifiers, list):

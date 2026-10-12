@@ -6,6 +6,9 @@ from __future__ import annotations
 class TestRailError(Exception):
     """Base class for all TestRail API errors."""
 
+    # Number of attempts made before the error was raised (> 1 after retries).
+    attempts: int = 1
+
 
 class TestRailNetworkError(TestRailError):
     """The request could not be completed (DNS, connection, TLS, ...)."""
@@ -18,8 +21,10 @@ class TestRailTimeoutError(TestRailNetworkError):
 class TestRailHTTPError(TestRailError):
     """TestRail returned a non-success HTTP status."""
 
-    def __init__(self, status: int, message: str) -> None:
+    def __init__(self, status: int, message: str, retry_after_seconds: float | None = None) -> None:
         self.status = status
+        # Parsed ``Retry-After`` header, if the server sent a valid one.
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(f"HTTP {status}: {message}")
 
 
@@ -33,10 +38,6 @@ class TestRailAuthorizationError(TestRailHTTPError):
 
 class TestRailRateLimitError(TestRailHTTPError):
     """HTTP 429: too many requests."""
-
-    def __init__(self, status: int, message: str, retry_after_seconds: float | None) -> None:
-        super().__init__(status, message)
-        self.retry_after_seconds = retry_after_seconds
 
 
 class TestRailResponseError(TestRailError):

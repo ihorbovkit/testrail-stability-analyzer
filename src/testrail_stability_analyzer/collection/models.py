@@ -32,8 +32,12 @@ class DimensionValue:
 
     @property
     def is_identified(self) -> bool:
-        """True when runs sharing this value may be grouped together."""
-        return self.state in (DimensionState.RESOLVED, DimensionState.NOT_CONFIGURED)
+        """True when runs sharing this value may be grouped together.
+
+        Only a resolved mapping is evidence that two runs share an application or
+        platform; ``not_configured`` is treated like ``unresolved``.
+        """
+        return self.state is DimensionState.RESOLVED
 
 
 NOT_CONFIGURED = DimensionValue(DimensionState.NOT_CONFIGURED)

@@ -289,9 +289,12 @@ name, run name, and/or configuration names (`sources`). A dimension is
 `ambiguous` when several match, and `not_configured` when no mappings exist.
 Nothing is guessed.
 
-- Runs with an unresolved or ambiguous application or platform are kept, but
-  each forms its own history group (`HistoryKey.run_id` is set), so
-  unrelated executions are never merged.
+- Runs whose application or platform is unresolved, ambiguous, or not
+  configured are kept, but each forms its own history group
+  (`HistoryKey.run_id` is set), so unrelated executions are never merged.
+  Only a resolved mapping groups runs together. A project with a single
+  application or platform can say so explicitly with a catch-all mapping,
+  e.g. `{ name = "Product", patterns = [".*"] }`.
 - `[filters]` restricts collection to mapped names. Runs resolved to other
   names are `excluded_by_filter`; runs that cannot be classified for an active
   filter are `unclassified`: reported for review, but their results are not

@@ -62,7 +62,7 @@ class HistoricalCollector:
         now = self._clock()
         history = self._settings.history
         window_start = now - timedelta(days=history.window_days)
-        lookback_days = history.lookback_limit_days
+        lookback_days = history.lookback_limit_days or None  # 0 means no limit, as in configuration
         lookback_start = None if lookback_days is None else now - timedelta(days=lookback_days)
         discovery = RunDiscovery(self._client, self._settings).discover(lookback_start)
         session = _Session(self._client, self._settings, self._resolver, window_start, lookback_start)

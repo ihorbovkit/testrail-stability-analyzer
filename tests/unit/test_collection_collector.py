@@ -1,3 +1,4 @@
+import dataclasses
 import unittest
 
 from testrail_stability_analyzer.collection import (
@@ -7,7 +8,7 @@ from testrail_stability_analyzer.collection import (
     DimensionState,
     HistoricalCollector,
 )
-from testrail_stability_analyzer.config import StatusCategory
+from testrail_stability_analyzer.config import HistorySettings, StatusCategory
 
 from . import fake_testrail as fx
 from .fake_testrail import (
@@ -392,6 +393,31 @@ class UnidentifiedAndFilteredRunTests(unittest.TestCase):
         self.assertTrue(all(k.application.state is DimensionState.UNRESOLVED for k in keys))
         self.assertTrue(any("grouped per run" in note for note in report.limitations))
 
+    def two_runs_of_case_100(self):
+        server = FakeTestRail()
+        for run_id in (1, 2):
+            server.add_run(
+                fx.run(run_id, f"Nightly {run_id}", created=days_ago(5)),
+                tests=[fx.test(run_id, 100, run_id, status_id=PASSED)],
+                results=[fx.result(run_id, run_id, PASSED, days_ago(4))],
+            )
+        return server
+
+    def test_unconfigured_application_and_platform_are_not_grouped(self):
+        settings = fx.settings(mappings={"applications": [], "platforms": []})
+        report = collect(self.two_runs_of_case_100(), settings)
+        keys = [h.key for h in report.histories]
+        self.assertEqual([(k.case_id, k.run_id) for k in keys], [(100, 1), (100, 2)])
+        self.assertTrue(all(k.platform.state is DimensionState.NOT_CONFIGURED for k in keys))
+        self.assertTrue(all(len(h.window) == 1 for h in report.histories))
+
+    def test_catch_all_mappings_group_runs_explicitly(self):
+        catch_all = {"applications": [{"name": "Product", "patterns": [".*"]}], "platforms": [{"name": "Any", "patterns": [".*"]}]}
+        report = collect(self.two_runs_of_case_100(), fx.settings(mappings=catch_all))
+        (h,) = report.histories
+        self.assertTrue(h.key.is_identified)
+        self.assertEqual([o.run_id for o in h.window], [2, 1])
+
     def test_filtered_unclassified_runs_are_reported_but_not_downloaded(self):
         server = FakeTestRail()
         server.add_run(fx.run(1, "App-A Plat-X", created=days_ago(5)), tests=[], results=[])
@@ -430,6 +456,14 @@ class EdgeCaseTests(unittest.TestCase):
         self.assertEqual([o.result.id for o in report.orphan_results], [3])
         self.assertEqual([(c.run_id, c.result_id) for c in report.conflicts], [(1, 2)])
         self.assertGreater(sum(call.startswith("get_results_for_run/1") for call in server.calls), 1)
+
+    def test_zero_lookback_in_constructed_settings_means_no_limit(self):
+        server = FakeTestRail()
+        server.add_run(fx.run(1, "App-A Plat-X", created=days_ago(5)), tests=[], results=[])
+        settings = dataclasses.replace(fx.settings(), history=HistorySettings(lookback_limit_days=0))
+        report = collect(server, settings)
+        self.assertIsNone(report.lookback_start)
+        self.assertEqual([p for c, p in zip(server.calls, server.params) if c == "get_results_for_run/1"], [{}])
 
     def test_results_are_requested_from_lookback_start(self):
         server = FakeTestRail()

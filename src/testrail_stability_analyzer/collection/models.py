@@ -229,6 +229,9 @@ class RunScan:
     result_count: int = 0
     newest_result_on: datetime | None = None
     has_untimed_results: bool = False
+    # Open, or created in the window: its tests are needed even without results,
+    # since they can hold untested instances.
+    active_in_window: bool = False
 
 
 @dataclass(frozen=True, slots=True)

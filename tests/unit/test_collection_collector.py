@@ -197,6 +197,25 @@ class LatestKnownTests(unittest.TestCase):
         # The unscanned run has an untimed result, so the latest stays uncertain.
         self.assertEqual(h.coverage, Coverage.PARTIAL)
 
+    def test_unfetched_tests_of_an_active_run_without_results_mark_coverage_partial(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[fx.test(1, 100, 1, status_id=PASSED)],
+            results=[fx.result(1, 1, PASSED, days_ago(4))],
+        )
+        # Active run with no results yet; its tests (case 100 untested) are never fetched.
+        server.add_run(fx.run(2, "App-A Plat-Y", created=days_ago(6)), tests=[fx.test(2, 100, 2)], results=[])
+        # 4 discovery + 2 for run 1 + 1 result request for run 2.
+        report = collect(server, fx.settings(http={"max_requests_per_execution": 7}))
+        self.assertNotIn("get_tests/2", server.calls)
+        scan = next(s for s in report.scans if s.run_id == 2)
+        self.assertEqual((scan.results_fetched, scan.tests_fetched, scan.active_in_window), (True, False, True))
+        h = history(report, 100, "App A", "Platform Y")
+        self.assertEqual(h.coverage, Coverage.PARTIAL)
+        self.assertIn("test instances were not scanned", h.coverage_notes[0])
+        self.assertEqual(history(report, 100, "App A", "Platform X").coverage, Coverage.LOOKBACK_LIMITED)
+
     def test_run_with_unknown_completion_flag_is_treated_as_possibly_open(self):
         server = FakeTestRail()
         server.add_run(

@@ -153,7 +153,8 @@ def _coverage(
         unscanned = [scan.run_id for scan in gaps.get(group, ()) if _may_hold_newer(scan, latest)]
         if unscanned:
             notes.append(
-                f"{len(unscanned)} run(s) of this application/platform that may hold newer results were not scanned"
+                f"{len(unscanned)} run(s) of this application/platform that may hold newer results "
+                "or test instances were not scanned"
             )
     if notes:
         return Coverage.PARTIAL, tuple(notes)
@@ -163,10 +164,13 @@ def _coverage(
 
 
 def _may_hold_newer(scan: RunScan, latest: RunOutcome | None) -> bool:
+    """Whether an unscanned run could change this key's latest result or state."""
     if not scan.results_fetched:
         return True
+    if scan.active_in_window:
+        return True  # test membership unknown: the case may be included but untested
     if scan.result_count == 0:
-        return False
+        return False  # older run without results in the lookback: deliberately skipped
     if latest is None or latest.executed_on is None or scan.has_untimed_results:
         return True
     return scan.newest_result_on is not None and scan.newest_result_on >= latest.executed_on

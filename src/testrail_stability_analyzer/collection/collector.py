@@ -282,6 +282,7 @@ class _Session:
             result_count=len(results or ()),
             newest_result_on=None if newest is None else datetime.fromtimestamp(newest, UTC),
             has_untimed_results=untimed,
+            active_in_window=self._active_in_window(run),
         )
 
     def _limitations(

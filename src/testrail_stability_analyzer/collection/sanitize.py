@@ -21,13 +21,16 @@ _SUBSTITUTIONS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\bwww\.\S+", re.IGNORECASE), "[url]"),
     (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "[email]"),
     (re.compile(r"\b(bearer|basic)\s+\S+", re.IGNORECASE), r"\1 [redacted]"),
+    # Sensitive key with ":" or "=", optionally quoted (JSON, YAML, query strings, attributes);
+    # the value is redacted whether quoted or bare.
     (
         re.compile(
-            r"\b([\w-]*(?:session|token|secret|password|passwd|auth|cookie|api[_-]?key|sid)[\w-]*)"
-            r"(\s*[:=]\s*)\S+",
+            r"""(["']?)\b([\w-]*(?:session|token|secret|password|passwd|auth|cookie|credential"""
+            r"""|api[_-]?key|access[_-]?key|private[_-]?key|sid)[\w-]*)\1"""
+            r"""(\s*[:=]\s*)(?:"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|[^\s,;&}\]]+)""",
             re.IGNORECASE,
         ),
-        r"\1\2[redacted]",
+        r"\1\2\1\3[redacted]",
     ),
     (re.compile(r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b", re.IGNORECASE), "[id]"),
     (re.compile(r"\b[0-9a-f]{16,}\b", re.IGNORECASE), "[id]"),

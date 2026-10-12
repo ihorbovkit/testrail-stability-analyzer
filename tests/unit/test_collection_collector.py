@@ -176,6 +176,27 @@ class LatestKnownTests(unittest.TestCase):
         # The untested instance in the current run is kept alongside the older results.
         self.assertEqual([o.run_id for o in h.outcomes], [801, 802, 803, 800])
 
+    def test_untimed_results_do_not_outrank_newer_dated_results(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(820, "App-A Plat-X untimed", created=days_ago(300), completed=days_ago(299)),
+            tests=[fx.test(1, 100, 820, status_id=FAILED)],
+            results=[fx.result(1, 1, FAILED, days_ago(300)), fx.result(2, 1, None, None, comment="note")],
+        )
+        server.add_run(
+            fx.run(821, "App-A Plat-X dated", created=days_ago(101), completed=days_ago(100)),
+            tests=[fx.test(3, 100, 821, status_id=PASSED)],
+            results=[fx.result(3, 3, PASSED, days_ago(100))],
+        )
+        # 4 discovery + 2 result requests + 1 get_tests.
+        report = collect(server, fx.settings(http={"max_requests_per_execution": 7}))
+        self.assertIn("get_tests/821", server.calls)
+        self.assertNotIn("get_tests/820", server.calls)
+        h = history(report, 100, "App A", "Platform X")
+        self.assertEqual(h.latest_known.run_id, 821)
+        # The unscanned run has an untimed result, so the latest stays uncertain.
+        self.assertEqual(h.coverage, Coverage.PARTIAL)
+
     def test_case_executed_only_outside_the_window_has_a_history(self):
         server = FakeTestRail()
         server.add_run(

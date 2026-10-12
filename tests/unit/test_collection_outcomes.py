@@ -146,6 +146,22 @@ class SanitizeTests(unittest.TestCase):
         self.assertIn("[url]", summary)
         self.assertIn("sessionId=[redacted]", summary)
 
+    def test_redacts_quoted_and_structured_credentials(self):
+        cases = {
+            '{"api_key":"supersecret"}': '{"api_key":[redacted]}',
+            "{'password': 'p@ss word'}": "{'password': [redacted]}",
+            'login failed password="hunter2" retry': "login failed password=[redacted] retry",
+            "token=abc123&step=2": "token=[redacted]&step=2",
+            "api-key: xyz, then timeout": "api-key: [redacted], then timeout",
+            '{"user": "qa", "access_key": "AKIA", "client_secret":"s\\"x"}': (
+                '{"user": "qa", "access_key": [redacted], "client_secret":[redacted]}'
+            ),
+            "&quot;session_id&quot;:&quot;s1&quot;": '"session_id":[redacted]',
+        }
+        for comment, expected in cases.items():
+            with self.subTest(comment=comment):
+                self.assertEqual(sanitize_comment(comment, max_length=500), expected)
+
     def test_truncates_and_handles_empty(self):
         self.assertIsNone(sanitize_comment(None))
         self.assertIsNone(sanitize_comment("<br/>  "))

@@ -325,7 +325,9 @@ outcome is the **latest record that carries a status**:
 - Comments are kept on the result models but excluded from `repr()`.
   `ResolvedResult.failure_summary()` returns a sanitized, truncated summary
   with HTML, URLs, email addresses, tokens, session IDs, long hex IDs/UUIDs,
-  and file paths replaced by placeholders. Redaction is best-effort; summaries
+  and file paths replaced by placeholders. Values of credential-like keys
+  (`password`, `token`, `api_key`, `secret`, `session…`, …) are redacted in
+  `key=value`, `key: value`, and quoted JSON/attribute forms. Redaction is best-effort; summaries
   must still not be sent to external services.
 
 ### Grouping and history window

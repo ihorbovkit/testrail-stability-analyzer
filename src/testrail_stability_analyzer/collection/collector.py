@@ -253,8 +253,13 @@ class _Session:
         return (max(stamps) if stamps else None), len(stamps) < len(results)
 
     def _newest_result_order(self, run: DiscoveredRun) -> tuple[bool, float, int]:
-        newest, untimed = self._newest(run.run_id)
-        return (untimed, newest if newest is not None else -math.inf, run.run_id)
+        """Sort key (reverse): newest known result first; wholly untimed runs last.
+
+        Untimed results keep coverage uncertain (see ``RunScan.has_untimed_results``)
+        but do not move a run ahead of runs with newer dated results.
+        """
+        newest, _ = self._newest(run.run_id)
+        return (newest is not None, newest if newest is not None else -math.inf, run.run_id)
 
     def _scan(self, run: DiscoveredRun) -> RunScan:
         results = self.results.get(run.run_id)

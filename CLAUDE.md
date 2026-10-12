@@ -40,12 +40,15 @@ It must work with any TestRail instance and must not be tied to a specific custo
 
 ## Git rules
 
-- Never commit, push, create branches, reset, clean, or rewrite history without explicit approval.
+- Never stage files, commit, push, create Pull Requests, or merge Pull Requests. These operations are exclusively the user's responsibility.
+- Never create or switch branches, reset, clean, or rewrite Git history without explicit approval.
 - Never modify Git remotes or Git configuration without approval.
 - Never initialize another repository.
-- Check `git status` before making changes; preserve existing user changes.
+- Check `git status` before making changes and preserve existing user changes.
 - Never force-push.
 - Never commit generated reports or credentials.
+- Claude may use read-only Git operations (`git status`, `git diff`, `git log`, `git show`) for investigation and code review.
+- After implementation, provide a change summary, test results, and Git status. Leave all staging, committing, pushing, and PR management to the user.
 
 ## Development workflow
 

@@ -1,0 +1,198 @@
+# =============================================================================
+# testrail-stability-analyzer .gitignore
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Claude Code local configuration
+# Contains credentials (API keys). Ignored entirely for now; selectively
+# un-ignore reviewed, secret-free agents/skills/settings later.
+# CLAUDE.md (project root) is intentionally NOT ignored.
+# -----------------------------------------------------------------------------
+.claude/
+CLAUDE.local.md
+
+# -----------------------------------------------------------------------------
+# Python bytecode and caches
+# -----------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+.ruff_cache/
+cython_debug/
+
+# -----------------------------------------------------------------------------
+# Virtual environments
+# -----------------------------------------------------------------------------
+.venv/
+venv/
+env/
+ENV/
+.python-version.local
+__pypackages__/
+
+# -----------------------------------------------------------------------------
+# Build and distribution artifacts
+# -----------------------------------------------------------------------------
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+wheels/
+share/python-wheels/
+*.egg-info/
+*.egg
+.installed.cfg
+MANIFEST
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# -----------------------------------------------------------------------------
+# Testing and coverage
+# -----------------------------------------------------------------------------
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+coverage.json
+htmlcov/
+*.cover
+*.py,cover
+.hypothesis/
+junit*.xml
+test-results/
+
+# -----------------------------------------------------------------------------
+# Environment files (keep an example template trackable)
+# -----------------------------------------------------------------------------
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+
+# -----------------------------------------------------------------------------
+# Credentials, API keys, and secret configuration
+# -----------------------------------------------------------------------------
+secrets/
+.secrets/
+*.secret
+*.secrets
+*secret*.json
+*secret*.yaml
+*secret*.yml
+*secret*.toml
+credentials*
+*credentials*.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.jks
+.netrc
+token*.json
+*.token
+api_key*
+apikey*
+
+# Customer/instance-specific runtime configuration (keep examples trackable)
+config/local/
+config/*.local.*
+*.local.yaml
+*.local.yml
+*.local.toml
+*.local.json
+testrail.yaml
+testrail.yml
+testrail.toml
+testrail.json
+testrail.ini
+!*.example.yaml
+!*.example.yml
+!*.example.toml
+!*.example.json
+
+# -----------------------------------------------------------------------------
+# Generated reports and exports
+# -----------------------------------------------------------------------------
+reports/
+output/
+outputs/
+exports/
+results/
+*.xlsx
+*.xls
+*.xlsm
+~$*.xlsx
+
+# -----------------------------------------------------------------------------
+# Local test data that may contain real TestRail results
+# (synthetic fixtures under tests/fixtures/ remain trackable)
+# -----------------------------------------------------------------------------
+data/
+local_data/
+testrail_data/
+snapshots/
+cache/
+.cache/
+*.sqlite
+*.sqlite3
+*.db
+*.dump
+*.har
+
+# -----------------------------------------------------------------------------
+# Logs and temporary files
+# -----------------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+tmp/
+temp/
+*.tmp
+*.temp
+*.bak
+*.swp
+*.swo
+*~
+
+# -----------------------------------------------------------------------------
+# OS files
+# -----------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+Thumbs.db
+Desktop.ini
+
+# -----------------------------------------------------------------------------
+# IDE / editor local configuration
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.code-workspace
+.fleet/
+.history/
+*.sublime-project
+*.sublime-workspace
+
+# -----------------------------------------------------------------------------
+# Jupyter
+# -----------------------------------------------------------------------------
+.ipynb_checkpoints/

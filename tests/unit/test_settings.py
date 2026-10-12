@@ -1,9 +1,11 @@
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 
 from testrail_stability_analyzer.config import (
     ConfigurationError,
+    MappingSettings,
     MatchSource,
     StatusCategory,
     load_settings,
@@ -227,6 +229,14 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(settings.filters.applications, ("App A",))
         self.assertEqual(settings.filters.platforms, ())
         self.assertTrue(settings.filters.enabled)
+
+    def test_mapping_settings_keeps_original_positional_order(self):
+        fields = MappingProxyType({"application_version": "version"})
+        statuses = MappingProxyType({StatusCategory.AUTOMATION_ISSUE: ("au_issue",)})
+        mappings = MappingSettings((), (), fields, statuses)
+        self.assertEqual(mappings.custom_fields, fields)
+        self.assertEqual(mappings.statuses, statuses)
+        self.assertEqual(mappings.execution_types, ())
 
     def test_invalid_filters_and_applicability(self):
         app = {"name": "App A", "patterns": ["a"]}

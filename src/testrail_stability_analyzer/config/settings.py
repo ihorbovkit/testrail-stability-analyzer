@@ -151,11 +151,12 @@ class FilterSettings:
 class MappingSettings:
     applications: tuple[DimensionMapping, ...] = ()
     platforms: tuple[DimensionMapping, ...] = ()
-    execution_types: tuple[DimensionMapping, ...] = ()
     # Logical field name -> TestRail field system name.
     custom_fields: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     # Category -> TestRail status system names or numeric IDs.
     statuses: Mapping[StatusCategory, tuple[str | int, ...]] = field(default_factory=lambda: MappingProxyType({}))
+    # Appended last to keep the positional order of the fields above.
+    execution_types: tuple[DimensionMapping, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,7 +290,13 @@ class _Parser:
             history=HistorySettings(window_days, max_runs, lookback),
             http=HttpSettings(connect_timeout, read_timeout, max_requests, max_retries, backoff, max_delay),
             naming=NamingSettings(plan_patterns, run_patterns),
-            mappings=MappingSettings(applications, platforms, execution_types, custom_fields, statuses),
+            mappings=MappingSettings(
+                applications=applications,
+                platforms=platforms,
+                custom_fields=custom_fields,
+                statuses=statuses,
+                execution_types=execution_types,
+            ),
             filters=FilterSettings(**filter_values),
         )
 
@@ -437,7 +444,7 @@ class _Parser:
             applicability = self._applicability_values(entry, entry_path)
             if name is not None:
                 seen.add(name)
-                result.append(DimensionMapping(name, patterns, sources, applicability))
+                result.append(DimensionMapping(name, patterns, sources, applicability_values=applicability))
         return tuple(result)
 
     def _applicability_values(self, entry: Mapping[str, Any], path: str) -> tuple[str | int, ...]:

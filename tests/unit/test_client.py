@@ -234,6 +234,26 @@ class PaginationTests(unittest.TestCase):
         with self.assertRaises(TestRailResponseError):
             list(client.get_paginated("get_cases/1", "cases"))
 
+    def test_non_object_items_rejected(self):
+        for payload in ([1], [{"id": 1}, "bad"], {"cases": ["bad"]}, {"cases": [{"id": 1}, None]}):
+            client, _, _ = make_client(ok(payload))
+            with self.subTest(payload=payload), self.assertRaises(TestRailResponseError):
+                list(client.get_paginated("get_cases/1", "cases"))
+
+    def test_absent_or_null_links_end_pagination(self):
+        for payload in ({"cases": [{"id": 1}]}, {"cases": [{"id": 1}], "_links": None},
+                        {"cases": [{"id": 1}], "_links": {}}, {"cases": [{"id": 1}], "_links": {"next": None}}):
+            client, transport, _ = make_client(ok(payload))
+            with self.subTest(payload=payload):
+                self.assertEqual(list(client.get_paginated("get_cases/1", "cases")), [{"id": 1}])
+                self.assertEqual(len(transport.calls), 1)
+
+    def test_malformed_links_rejected_instead_of_truncating(self):
+        for links in ("bad", [], 0, False, {"next": ""}, {"next": 5}, {"next": {}}):
+            client, _, _ = make_client(ok({"cases": [{"id": 1}], "_links": links}))
+            with self.subTest(links=links), self.assertRaises(TestRailResponseError):
+                list(client.get_paginated("get_cases/1", "cases"))
+
     def test_unsafe_next_links_rejected(self):
         for link in ("https://evil.example/api/v2/get_cases/1", "/api/v2/add_result/1", "/api/v2/get_cases/1&x=1#y"):
             client, transport, _ = make_client(ok({"cases": [], "_links": {"next": link}}))

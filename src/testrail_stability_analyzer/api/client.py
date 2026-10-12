@@ -78,16 +78,16 @@ class TestRailClient:
         while url is not None:
             payload = self._request(url)
             if isinstance(payload, list):
-                yield from payload
+                yield from _validated_items(payload, endpoint)
                 return
             if not isinstance(payload, dict) or not isinstance(payload.get(collection_key), list):
                 raise TestRailResponseError(f"{endpoint}: response has no '{collection_key}' list")
-            yield from payload[collection_key]
-            links = payload.get("_links") or {}
-            next_link = links.get("next") if isinstance(links, dict) else None
-            url = self._next_page_url(next_link) if next_link else None
+            yield from _validated_items(payload[collection_key], endpoint)
+            url = self._next_page_url(_next_link(payload, endpoint))
 
-    def _next_page_url(self, link: object) -> str:
+    def _next_page_url(self, link: object) -> str | None:
+        if link is None:
+            return None
         if not isinstance(link, str) or not link.startswith(API_PREFIX):
             raise TestRailResponseError("unexpected pagination link format")
         endpoint, _, query = link.removeprefix(API_PREFIX).partition("&")
@@ -136,6 +136,22 @@ class TestRailClient:
             return json.loads(response.body)
         except ValueError:
             raise TestRailResponseError(f"{endpoint}: response is not valid JSON") from None
+
+
+def _validated_items(items: list[Any], endpoint: str) -> list[dict[str, Any]]:
+    if not all(isinstance(item, dict) for item in items):
+        raise TestRailResponseError(f"{endpoint}: response contains non-object items")
+    return items
+
+
+def _next_link(payload: dict[str, Any], endpoint: str) -> object:
+    """Return ``_links.next``; absent or null means last page, any other shape is an error."""
+    links = payload.get("_links")
+    if links is None:
+        return None
+    if not isinstance(links, dict):
+        raise TestRailResponseError(f"{endpoint}: unexpected '_links' format")
+    return links.get("next")
 
 
 def _validate_endpoint(endpoint: str) -> None:

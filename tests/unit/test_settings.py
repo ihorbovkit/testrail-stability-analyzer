@@ -117,6 +117,29 @@ class HistoryAndHttpTests(unittest.TestCase):
             with self.subTest(sections=sections), self.assertRaises(ConfigurationError):
                 settings_from_mapping(minimal(**sections))
 
+    def test_non_finite_timeouts_are_rejected(self):
+        for key in ("connect_timeout_seconds", "read_timeout_seconds"):
+            for value in (float("inf"), float("nan"), "inf", "nan"):
+                with self.subTest(key=key, value=value), self.assertRaises(ConfigurationError) as ctx:
+                    settings_from_mapping(minimal(http={key: value}))
+                self.assertIn(f"http.{key} must be a finite positive number", ctx.exception.errors)
+
+    def test_non_finite_timeout_from_toml_and_environment(self):
+        path = Path(tempfile.mkdtemp()) / "config.toml"
+        self.addCleanup(path.parent.rmdir)
+        self.addCleanup(path.unlink)
+        path.write_text('[testrail]\nbase_url = "https://x.io"\nproject_id = 1\n[http]\nread_timeout_seconds = inf\n')
+        with self.assertRaises(ConfigurationError):
+            load_settings(path, environ={})
+        with self.assertRaises(ConfigurationError):
+            load_settings(
+                environ={
+                    "TESTRAIL_BASE_URL": "https://x.io",
+                    "TESTRAIL_PROJECT_ID": "1",
+                    "TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS": "inf",
+                }
+            )
+
 
 class MappingTests(unittest.TestCase):
     def test_no_mappings_or_patterns_required(self):
@@ -193,6 +216,13 @@ class MappingTests(unittest.TestCase):
             settings_from_mapping(minimal(mappings={"custom_fields": {"Bad Name": "custom_x"}}))
         with self.assertRaises(ConfigurationError):
             settings_from_mapping(minimal(mappings={"custom_fields": {"version": ""}}))
+
+    def test_credential_keys_rejected_in_custom_fields(self):
+        for key in ("api_key", "password", "Token"):
+            with self.subTest(key=key), self.assertRaises(ConfigurationError) as ctx:
+                settings_from_mapping(minimal(mappings={"custom_fields": {key: "supersecret"}}))
+            self.assertIn("credentials must not be stored", str(ctx.exception))
+            self.assertNotIn("supersecret", str(ctx.exception))
 
 
 class LoadSettingsTests(unittest.TestCase):

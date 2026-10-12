@@ -7,6 +7,7 @@ values. Credentials are never part of settings; see :mod:`.auth`.
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import tomllib
@@ -293,8 +294,8 @@ class _Parser:
                 value = float(value.strip())
             except ValueError:
                 pass
-        if isinstance(value, bool) or not isinstance(value, int | float) or not value > 0:
-            self.errors.append(f"{_join(path, key)} must be a positive number")
+        if isinstance(value, bool) or not isinstance(value, int | float) or not (value > 0 and math.isfinite(value)):
+            self.errors.append(f"{_join(path, key)} must be a finite positive number")
             return default
         return float(value)
 
@@ -389,7 +390,12 @@ class _Parser:
             return MappingProxyType({})
         result = {}
         for logical, system_name in value.items():
-            if not _IDENTIFIER_RE.match(str(logical)):
+            if str(logical).lower() in _CREDENTIAL_KEYS:
+                self.errors.append(
+                    f"mappings.custom_fields.{logical}: credentials must not be stored in configuration; "
+                    "provide them through a credential provider (e.g. TESTRAIL_USERNAME / TESTRAIL_API_KEY)"
+                )
+            elif not _IDENTIFIER_RE.match(str(logical)):
                 self.errors.append(f"mappings.custom_fields.{logical}: name must be lowercase snake_case")
             elif not isinstance(system_name, str) or not _IDENTIFIER_RE.match(system_name):
                 self.errors.append(f"mappings.custom_fields.{logical} must be a TestRail field system name")

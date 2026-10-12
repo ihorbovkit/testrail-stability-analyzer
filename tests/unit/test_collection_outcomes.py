@@ -162,6 +162,19 @@ class SanitizeTests(unittest.TestCase):
             with self.subTest(comment=comment):
                 self.assertEqual(sanitize_comment(comment, max_length=500), expected)
 
+    def test_html_encoded_markup_is_removed_but_literal_comparisons_are_kept(self):
+        cases = {
+            "&lt;img src=x onerror=alert(1)&gt;": None,
+            "&lt;img src=x onerror=alert(1)": None,
+            "&lt;script&gt;alert(1)&lt;/script&gt; boom": "boom",
+            "&lt;a href='javascript:x'&gt;link&lt;/a&gt;": "link",
+            "&lt;!-- note --&gt;done": "done",
+            "expected &lt;200&gt; but a &lt; b": "expected <200> but a < b",
+        }
+        for comment, expected in cases.items():
+            with self.subTest(comment=comment):
+                self.assertEqual(sanitize_comment(comment, max_length=500), expected)
+
     def test_truncates_and_handles_empty(self):
         self.assertIsNone(sanitize_comment(None))
         self.assertIsNone(sanitize_comment("<br/>  "))

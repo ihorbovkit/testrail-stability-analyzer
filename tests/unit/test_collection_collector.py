@@ -197,6 +197,17 @@ class LatestKnownTests(unittest.TestCase):
         # The unscanned run has an untimed result, so the latest stays uncertain.
         self.assertEqual(h.coverage, Coverage.PARTIAL)
 
+    def test_run_with_unknown_completion_flag_is_treated_as_possibly_open(self):
+        server = FakeTestRail()
+        server.add_run(
+            {**fx.run(830, "App-A Plat-X", created=days_ago(100)), "is_completed": None},
+            tests=[fx.test(1, 100, 830, status_id=UNTESTED)],
+            results=[],
+        )
+        report = collect(server)
+        self.assertIn("get_tests/830", server.calls)
+        self.assertEqual(history(report, 100, "App A", "Platform X").state, AvailabilityState.UNTESTED)
+
     def test_case_executed_only_outside_the_window_has_a_history(self):
         server = FakeTestRail()
         server.add_run(
@@ -383,6 +394,28 @@ class MissingStateTests(unittest.TestCase):
         h = history(report, 101, "App A", "Platform X")
         self.assertEqual((h.state, h.applicability), (AvailabilityState.RESULT_AVAILABLE, Applicability.NOT_APPLICABLE))
         self.assertFalse(any(call.startswith("get_cases/") for call in server.calls))
+
+    def test_unfetched_applicability_metadata_marks_coverage_partial(self):
+        server = FakeTestRail()
+        server.cases[10] = [fx.payloads.case(100, custom_apps=["A"])]
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[fx.test(1, 100, 1, status_id=PASSED)],
+            results=[fx.result(1, 1, PASSED, days_ago(4))],
+        )
+        server.add_run(fx.run(2, "App-A Plat-Y", created=days_ago(5)), tests=[], results=[])
+        # 4 discovery + 2 per run; the get_cases fallback does not fit.
+        settings = self.applicability_settings()
+        settings = dataclasses.replace(settings, http=dataclasses.replace(settings.http, max_requests_per_execution=8))
+        report = collect(server, settings)
+        self.assertTrue(report.budget_exhausted)
+        self.assertNotIn("get_cases/1", server.calls)
+        for platform in ("Platform X", "Platform Y"):
+            h = history(report, 100, "App A", platform)
+            self.assertEqual(h.coverage, Coverage.PARTIAL)
+            self.assertIn("applicability metadata could not be fetched (request budget)", h.coverage_notes)
+            self.assertEqual(h.applicability, Applicability.UNKNOWN)
+        self.assertEqual(history(report, 100, "App A", "Platform Y").state, AvailabilityState.UNKNOWN_APPLICABILITY)
 
     def test_applicability_falls_back_to_bulk_cases_once_per_suite(self):
         server = FakeTestRail()

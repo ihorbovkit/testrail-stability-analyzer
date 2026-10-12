@@ -60,6 +60,7 @@ def build_histories(
     gaps: Mapping[Group, Sequence[RunScan]],
     applicability: Callable[[int, DimensionValue], Applicability],
     global_notes: Sequence[str] = (),
+    case_notes: Mapping[int, str] | None = None,
     lookback_limited: bool = False,
 ) -> tuple[ExecutionHistory, ...]:
     """Build one history per key.
@@ -83,7 +84,8 @@ def build_histories(
         in_window = [o for o in ordered if o.executed_on is not None and o.executed_on >= window_start]
         group = (key.application, key.platform) if key.is_identified else None
         key_applicability = applicability(key.case_id, key.application)
-        coverage, notes = _coverage(group, latest, gaps, global_notes, lookback_limited)
+        key_notes = [*global_notes, *([case_notes[key.case_id]] if case_notes and key.case_id in case_notes else [])]
+        coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited)
         histories.append(
             ExecutionHistory(
                 key=key,

@@ -91,6 +91,8 @@ class _Session:
         self.outcomes: list[RunOutcome] = []
         self.orphans: list[ResolvedResult] = []
         self.conflicts: list[ResultConflict] = []
+        # Cases whose applicability could not be read because a get_cases request was not made.
+        self.applicability_unchecked: set[int] = set()
         custom_fields = settings.mappings.custom_fields
         self.applicability_field = custom_fields.get("applicability")
         self.version_field = custom_fields.get("application_version")
@@ -111,6 +113,8 @@ class _Session:
         for run in sorted(with_results, key=self._newest_result_order, reverse=True):
             self._fetch_tests(run)
 
+        # Before coverage is assessed: the bulk case fallback can exhaust the budget.
+        applicability = self._applicability_lookup()
         scans = tuple(self._scan(run) for run in included)
         groups = {run.run_id: group_of(run) for run in included}
         gaps: dict[Group, list[RunScan]] = defaultdict(list)
@@ -127,8 +131,11 @@ class _Session:
             scanned_groups={groups[run_id] for run_id in self.tests if groups[run_id] is not None},
             platforms={group[1] for group in groups.values() if group is not None},
             gaps=gaps,
-            applicability=self._applicability_lookup(),
+            applicability=applicability,
             global_notes=global_notes,
+            case_notes=dict.fromkeys(
+                self.applicability_unchecked, "applicability metadata could not be fetched (request budget)"
+            ),
             lookback_limited=self.lookback_start is not None,
         )
         return CollectionReport(
@@ -234,7 +241,10 @@ class _Session:
             cases = self._call(
                 lambda: list(self.client.get_cases(self.settings.testrail.project_id, suite_id=suite_id))
             )
-            for case in cases or ():
+            if cases is None:
+                self.applicability_unchecked.update(case for case, suite in missing.items() if suite == suite_id)
+                continue
+            for case in cases:
                 if case.id in missing:
                     value = field_value(case, field, _MISSING)
                     if value is not _MISSING:
@@ -245,7 +255,8 @@ class _Session:
 
     def _active_in_window(self, run: DiscoveredRun) -> bool:
         created = run.run.created_on
-        return not run.run.is_completed or created is None or created >= self.window_start
+        # An unknown completion flag (None) is treated as possibly open.
+        return run.run.is_completed is not True or created is None or created >= self.window_start
 
     def _newest(self, run_id: int) -> tuple[float | None, bool]:
         results = self.results.get(run_id, ())
@@ -298,4 +309,4 @@ class _Session:
 def _priority(run: DiscoveredRun) -> tuple[bool, float, int]:
     """Open runs first, then newest created first; deterministic by run ID."""
     created = run.run.created_on
-    return (bool(run.run.is_completed), -(created.timestamp() if created else math.inf), -run.run_id)
+    return (run.run.is_completed is True, -(created.timestamp() if created else math.inf), -run.run_id)

@@ -327,8 +327,12 @@ outcome is the **latest record that carries a status**:
   with HTML, URLs, email addresses, tokens, session IDs, long hex IDs/UUIDs,
   and file paths replaced by placeholders. Values of credential-like keys
   (`password`, `token`, `api_key`, `secret`, `session…`, …) are redacted in
-  `key=value`, `key: value`, and quoted JSON/attribute forms. Redaction is best-effort; summaries
-  must still not be sent to external services.
+  `key=value`, `key: value`, and quoted JSON/attribute forms. Markup is
+  removed both before and after HTML entities are decoded, so encoded tags
+  such as `&lt;img …&gt;` do not survive. The summary is **plain text**, not
+  HTML: it can still contain `<`, `>`, or `&` (e.g. `expected <200>`), so
+  HTML reports must escape it. Redaction is best-effort; summaries must still
+  not be sent to external services.
 
 ### Grouping and history window
 

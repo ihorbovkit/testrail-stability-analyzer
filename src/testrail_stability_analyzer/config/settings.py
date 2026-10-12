@@ -21,8 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_HISTORY_WINDOW_DAYS: Final = 60
 DEFAULT_MAX_HISTORY_RUNS: Final = 10
-# No limit by default: the latest known result must be found however old it is.
-DEFAULT_LOOKBACK_LIMIT_DAYS: Final[int | None] = None
+# Extended lookback for the latest known result; 0 in configuration means no limit.
+DEFAULT_LOOKBACK_LIMIT_DAYS: Final[int | None] = 365
 DEFAULT_CONNECT_TIMEOUT_SECONDS: Final = 10.0
 DEFAULT_READ_TIMEOUT_SECONDS: Final = 30.0
 DEFAULT_MAX_REQUESTS_PER_EXECUTION: Final = 1000
@@ -97,8 +97,8 @@ class TestRailSettings:
 class HistorySettings:
     window_days: int = DEFAULT_HISTORY_WINDOW_DAYS
     max_runs: int = DEFAULT_MAX_HISTORY_RUNS
-    # Optional cap on how far back to search for the latest known result; None means
-    # no limit. Results older than a configured cap will not be found.
+    # Extended lookback (days) for the latest known result; None means no limit.
+    # Results older than a configured limit will not be found.
     lookback_limit_days: int | None = DEFAULT_LOOKBACK_LIMIT_DAYS
 
 
@@ -121,6 +121,9 @@ class DimensionMapping:
     name: str
     patterns: tuple[re.Pattern[str], ...]
     sources: tuple[MatchSource, ...] = tuple(MatchSource)
+    # Applications only: values of the ``applicability`` case field (raw IDs or
+    # strings) that mark a case as applicable to this application.
+    applicability_values: tuple[str | int, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,9 +135,23 @@ class NamingSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class FilterSettings:
+    """Optional include filters by mapped name; empty tuples include everything."""
+
+    applications: tuple[str, ...] = ()
+    platforms: tuple[str, ...] = ()
+    execution_types: tuple[str, ...] = ()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.applications or self.platforms or self.execution_types)
+
+
+@dataclass(frozen=True, slots=True)
 class MappingSettings:
     applications: tuple[DimensionMapping, ...] = ()
     platforms: tuple[DimensionMapping, ...] = ()
+    execution_types: tuple[DimensionMapping, ...] = ()
     # Logical field name -> TestRail field system name.
     custom_fields: Mapping[str, str] = field(default_factory=lambda: MappingProxyType({}))
     # Category -> TestRail status system names or numeric IDs.
@@ -148,6 +165,7 @@ class Settings:
     http: HttpSettings = HttpSettings()
     naming: NamingSettings = NamingSettings()
     mappings: MappingSettings = MappingSettings()
+    filters: FilterSettings = FilterSettings()
 
 
 def load_settings(config_path: str | Path | None = None, *, environ: Mapping[str, str] | None = None) -> Settings:
@@ -195,7 +213,7 @@ class _Parser:
     def parse(self, data: Mapping[str, Any]) -> Settings:
         if not isinstance(data, Mapping):
             raise ConfigurationError(["configuration root must be a table"])
-        self._check_keys(data, "", {"testrail", "history", "http", "naming", "mappings"})
+        self._check_keys(data, "", {"testrail", "history", "http", "naming", "mappings", "filters"})
 
         testrail = self._section(data, "testrail", {"base_url", "project_id", "suite_id", "allow_insecure_http"})
         allow_http = self._boolean(testrail, "allow_insecure_http", "testrail", default=False)
@@ -240,11 +258,28 @@ class _Parser:
         plan_patterns = self._patterns(naming, "plan_name_patterns", "naming")
         run_patterns = self._patterns(naming, "run_name_patterns", "naming")
 
-        mappings = self._section(data, "mappings", {"applications", "platforms", "custom_fields", "statuses"})
+        mappings = self._section(
+            data, "mappings", {"applications", "platforms", "execution_types", "custom_fields", "statuses"}
+        )
         applications = self._dimensions(mappings, "applications")
         platforms = self._dimensions(mappings, "platforms")
+        execution_types = self._dimensions(mappings, "execution_types")
         custom_fields = self._custom_fields(mappings)
         statuses = self._statuses(mappings)
+        if any(app.applicability_values for app in applications) and "applicability" not in custom_fields:
+            self.errors.append(
+                "mappings.applications[].applicability_values requires mappings.custom_fields.applicability"
+            )
+
+        filters = self._section(data, "filters", {"applications", "platforms", "execution_types"})
+        filter_values = {
+            key: self._filter(filters, key, defined)
+            for key, defined in (
+                ("applications", applications),
+                ("platforms", platforms),
+                ("execution_types", execution_types),
+            )
+        }
 
         if self.errors:
             raise ConfigurationError(self.errors)
@@ -254,7 +289,8 @@ class _Parser:
             history=HistorySettings(window_days, max_runs, lookback),
             http=HttpSettings(connect_timeout, read_timeout, max_requests, max_retries, backoff, max_delay),
             naming=NamingSettings(plan_patterns, run_patterns),
-            mappings=MappingSettings(applications, platforms, custom_fields, statuses),
+            mappings=MappingSettings(applications, platforms, execution_types, custom_fields, statuses),
+            filters=FilterSettings(**filter_values),
         )
 
     # -- structure ---------------------------------------------------------
@@ -387,7 +423,8 @@ class _Parser:
             if not isinstance(entry, Mapping):
                 self.errors.append(f"{entry_path} must be a table")
                 continue
-            self._check_keys(entry, entry_path, {"name", "patterns", "sources"})
+            allowed = {"name", "patterns", "sources"} | ({"applicability_values"} if key == "applications" else set())
+            self._check_keys(entry, entry_path, allowed)
             name = self._string(entry, "name", entry_path, required=True)
             if name is not None and name in seen:
                 self.errors.append(f"{entry_path}.name '{name}' is duplicated")
@@ -397,10 +434,29 @@ class _Parser:
             elif entry["patterns"] == []:
                 self.errors.append(f"{entry_path}.patterns must not be empty")
             sources = self._sources(entry, entry_path)
+            applicability = self._applicability_values(entry, entry_path)
             if name is not None:
                 seen.add(name)
-                result.append(DimensionMapping(name, patterns, sources))
+                result.append(DimensionMapping(name, patterns, sources, applicability))
         return tuple(result)
+
+    def _applicability_values(self, entry: Mapping[str, Any], path: str) -> tuple[str | int, ...]:
+        values = entry.get("applicability_values", [])
+        valid = isinstance(values, list) and all(
+            (isinstance(v, str) and v.strip()) or (isinstance(v, int) and not isinstance(v, bool)) for v in values
+        )
+        if not valid:
+            self.errors.append(f"{path}.applicability_values must be a list of non-empty strings or integers")
+            return ()
+        return tuple(v.strip() if isinstance(v, str) else v for v in values)
+
+    def _filter(self, data: Mapping[str, Any], key: str, defined: tuple[DimensionMapping, ...]) -> tuple[str, ...]:
+        names = self._string_list(data, key, "filters")
+        known = {mapping.name for mapping in defined}
+        for name in names:
+            if name not in known:
+                self.errors.append(f"filters.{key}: '{name}' is not defined in mappings.{key}")
+        return tuple(names)
 
     def _sources(self, entry: Mapping[str, Any], path: str) -> tuple[MatchSource, ...]:
         if "sources" not in entry:

@@ -29,7 +29,7 @@ class RequiredSettingsTests(unittest.TestCase):
         self.assertIsNone(settings.testrail.suite_id)
         self.assertEqual(settings.history.window_days, 60)
         self.assertEqual(settings.history.max_runs, 10)
-        self.assertIsNone(settings.history.lookback_limit_days)
+        self.assertEqual(settings.history.lookback_limit_days, 365)
         self.assertEqual(settings.http.connect_timeout_seconds, 10.0)
         self.assertEqual(settings.http.read_timeout_seconds, 30.0)
         self.assertEqual(settings.http.max_requests_per_execution, 1000)
@@ -210,6 +210,44 @@ class MappingTests(unittest.TestCase):
             with self.subTest(mappings=mappings), self.assertRaises(ConfigurationError):
                 settings_from_mapping(minimal(mappings=mappings))
 
+    def test_execution_types_filters_and_applicability(self):
+        settings = settings_from_mapping(
+            minimal(
+                mappings={
+                    "applications": [{"name": "App A", "patterns": ["a"], "applicability_values": [1, " App A "]}],
+                    "platforms": [{"name": "Web", "patterns": ["web"]}],
+                    "execution_types": [{"name": "Manual", "patterns": ["(?i)manual"]}],
+                    "custom_fields": {"applicability": "custom_target_apps"},
+                },
+                filters={"applications": ["App A"], "execution_types": ["Manual"]},
+            )
+        )
+        self.assertEqual(settings.mappings.applications[0].applicability_values, (1, "App A"))
+        self.assertEqual([m.name for m in settings.mappings.execution_types], ["Manual"])
+        self.assertEqual(settings.filters.applications, ("App A",))
+        self.assertEqual(settings.filters.platforms, ())
+        self.assertTrue(settings.filters.enabled)
+
+    def test_invalid_filters_and_applicability(self):
+        app = {"name": "App A", "patterns": ["a"]}
+        cases = [
+            {"filters": {"applications": ["Unknown App"]}, "mappings": {"applications": [app]}},
+            {"filters": {"platforms": ["Web"]}},
+            {"filters": {"applications": "App A"}, "mappings": {"applications": [app]}},
+            {"filters": {"owner": []}},
+            {"mappings": {"applications": [{**app, "applicability_values": [1]}]}},
+            {
+                "mappings": {
+                    "applications": [{**app, "applicability_values": [True]}],
+                    "custom_fields": {"applicability": "custom_apps"},
+                }
+            },
+            {"mappings": {"platforms": [{"name": "Web", "patterns": ["w"], "applicability_values": [1]}]}},
+        ]
+        for sections in cases:
+            with self.subTest(sections=sections), self.assertRaises(ConfigurationError):
+                settings_from_mapping(minimal(**sections))
+
     def test_naming_patterns_compile(self):
         settings = settings_from_mapping(minimal(naming={"plan_name_patterns": ["^Nightly"], "run_name_patterns": []}))
         self.assertTrue(settings.naming.plan_name_patterns[0].match("Nightly 42"))
@@ -264,7 +302,8 @@ class LoadSettingsTests(unittest.TestCase):
         settings = load_settings(EXAMPLE_CONFIG, environ={})
         self.assertEqual(settings.testrail.base_url, "https://example.testrail.io")
         self.assertEqual(settings.history.window_days, 60)
-        self.assertIsNone(settings.history.lookback_limit_days)
+        self.assertEqual(settings.history.lookback_limit_days, 365)
+        self.assertFalse(settings.filters.enabled)
 
     def test_environment_only(self):
         settings = load_settings(environ={"TESTRAIL_BASE_URL": "https://env.example", "TESTRAIL_PROJECT_ID": "4"})

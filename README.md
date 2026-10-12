@@ -4,11 +4,11 @@ A reusable, read-only Python application for analyzing test stability in any
 TestRail instance. It is not tied to a specific customer, project, automation
 framework, or TestRail configuration.
 
-> **Status: Milestone 2 (API integration and typed models).** Configuration,
-> credential handling, a read-only API client with typed endpoint methods,
-> bounded retries, and status resolution are implemented. Historical
-> collection, stability analysis, and report export are **not** implemented
-> yet. See [Implementation status](#implementation-status).
+> **Status: Milestone 3 (historical execution collection).** Configuration,
+> credential handling, a read-only API client, status resolution, and a
+> historical execution collector are implemented. Stability/flakiness
+> metrics and report export are **not** implemented yet. See
+> [Implementation status](#implementation-status).
 
 ## Purpose
 
@@ -85,7 +85,7 @@ settings = load_settings("config/local/config.toml")
 | `testrail.allow_insecure_http` | `false` | — |
 | `history.window_days` | `60` | `TESTRAIL_HISTORY_WINDOW_DAYS` |
 | `history.max_runs` (distinct runs per case/application/platform) | `10` | `TESTRAIL_HISTORY_MAX_RUNS` |
-| `history.lookback_limit_days` (optional cap; `0` = no limit) | no limit | `TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS` |
+| `history.lookback_limit_days` (extended lookback for the latest known result; `0` = no limit) | `365` | `TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS` |
 | `http.connect_timeout_seconds` | `10.0` | `TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS` |
 | `http.read_timeout_seconds` | `30.0` | `TESTRAIL_HTTP_READ_TIMEOUT_SECONDS` |
 | `http.max_requests_per_execution` (includes retries) | `1000` | `TESTRAIL_HTTP_MAX_REQUESTS` |
@@ -93,7 +93,9 @@ settings = load_settings("config/local/config.toml")
 | `http.retry_backoff_seconds` | `1.0` | `TESTRAIL_HTTP_RETRY_BACKOFF_SECONDS` |
 | `http.max_retry_delay_seconds` (≥ backoff) | `60.0` | `TESTRAIL_HTTP_MAX_RETRY_DELAY_SECONDS` |
 | `naming.plan_name_patterns` / `naming.run_name_patterns` | `[]` (include all) | — |
-| `mappings.applications` / `mappings.platforms` | `[]` | — |
+| `mappings.applications` / `mappings.platforms` / `mappings.execution_types` | `[]` | — |
+| `mappings.applications[].applicability_values` | `[]` | — |
+| `filters.applications` / `filters.platforms` / `filters.execution_types` | `[]` (include all) | — |
 | `mappings.custom_fields` | `{}` | — |
 | `mappings.statuses` | `{}` | — |
 
@@ -108,9 +110,9 @@ settings = load_settings("config/local/config.toml")
   `not_applicable`, `automation_issue`) to TestRail status system names or IDs.
   Statuses that match no rule are reported as `unknown` (see
   [Status resolution](#status-resolution)); `unknown` itself cannot be mapped.
-- **The latest known result is always searched for**, even when it is older
-  than the history window. `history.lookback_limit_days` is an optional cap
-  for limiting API usage; results older than the cap will not be found.
+- **The latest known result is searched for beyond the history window**, up
+  to `history.lookback_limit_days` (default 365). `0` removes the limit, at
+  the cost of scanning the whole project history.
 - **Validation reports every problem at once**, with the setting path, e.g.
   `history.window_days must be >= 1`. Unknown keys are rejected to catch typos.
 
@@ -238,6 +240,161 @@ IDs that are not defined on the instance resolve to `unknown`. Configured
 identifiers that do not exist on the instance (e.g. an optional custom status)
 are listed in `resolver.unmatched_mappings` instead of failing.
 
+## Historical collection
+
+```python
+from testrail_stability_analyzer.collection import HistoricalCollector
+
+report = HistoricalCollector(client, settings, resolver).collect()
+for history in report.histories:
+    history.key            # case ID + application + platform
+    history.window         # final outcomes inside the history window, newest first, capped
+    history.latest_known   # newest final outcome found, possibly older than the window
+    history.state          # result_available, untested, not_included_in_run, ...
+    history.coverage       # complete, lookback_limited, or partial
+```
+
+`report` also carries the discovery decisions for every run, per-run scan
+status, orphan and conflicting result records, the number of API requests
+made, and a list of coverage limitations. Nothing is logged.
+
+### Supported project structures
+
+Test Plans (with one or many child runs and configurations), standalone Test
+Runs, or both. Runs listed by both `get_runs` and a plan are deduplicated by
+run ID, keeping the plan context. Each run keeps its plan ID, run ID, name,
+creation date, and completion state.
+
+With a lookback start `L` (now − `lookback_limit_days`), discovery lists:
+
+- runs and plans created after `L`,
+- runs and plans created before `L` that are still open, and the child runs
+  of such plans that are open or created after `L`.
+
+Completed runs and plans created before `L` are not listed; results they may
+have received after `L` are therefore not found. This is reported as a
+limitation. With `lookback_limit_days = 0` everything is listed (one
+`get_plan` request per plan).
+
+### Application, platform, and execution type
+
+Each run is classified with `mappings.applications`, `mappings.platforms`, and
+`mappings.execution_types`: regular expressions matched against the plan
+name, run name, and/or configuration names (`sources`). A dimension is
+`resolved` when exactly one mapping matches, `unresolved` when none matches,
+`ambiguous` when several match, and `not_configured` when no mappings exist.
+Nothing is guessed.
+
+- Runs with an unresolved or ambiguous application or platform are kept, but
+  each forms its own history group (`HistoryKey.run_id` is set), so
+  unrelated executions are never merged.
+- `[filters]` restricts collection to mapped names. Runs resolved to other
+  names are `excluded_by_filter`; runs that cannot be classified for an active
+  filter are `unclassified`: reported for review, but their results are not
+  downloaded. Without filters, every discovered run is collected.
+- `naming.*_name_patterns` and `testrail.suite_id` exclusions are recorded
+  with a reason, never silently dropped.
+
+### Final outcome per run
+
+A test can have several results in one run (retries, triage). All records are
+kept in chronological order: by result timestamp, then result ID. The final
+outcome is the **latest record that carries a status**:
+
+- Comment-only records (no status) are kept as evidence but never replace a
+  status.
+- Records without a timestamp sort before timestamped ones; if no record has a
+  timestamp, `executed_on` stays `None` (never taken from the run or plan).
+- Statuses are resolved with `StatusResolver`. Failed stays failed (not an
+  application defect by default), a configured automation-issue status stays
+  distinct, blocked stays blocked, not applicable is distinct from not run, and
+  unmapped statuses stay `unknown`.
+- A test without status-bearing records has `final = None`; its current
+  TestRail status is kept in `current_status`.
+- The application version comes from the final result's `version` (or the
+  result field configured as `mappings.custom_fields.application_version`).
+- Comments are kept on the result models but excluded from `repr()`.
+  `ResolvedResult.failure_summary()` returns a sanitized, truncated summary
+  with HTML, URLs, email addresses, tokens, session IDs, long hex IDs/UUIDs,
+  and file paths replaced by placeholders. Redaction is best-effort; summaries
+  must still not be sent to external services.
+
+### Grouping and history window
+
+Outcomes are grouped by **case ID + application + platform**. Each distinct
+run contributes one outcome per case, with its retries attached. Outcomes are
+sorted by the actual final-result timestamp, newest first.
+
+- `history.outcomes`: every collected outcome for the key.
+- `history.window`: outcomes whose final result falls within
+  `history.window_days`, capped at `history.max_runs`; `window_total` is the
+  count before the cap.
+- Exact duplicate result records (e.g. across pages) are merged; records with
+  the same ID but different content are listed in `report.conflicts`.
+
+### Collection order and latest known result
+
+The latest known result is determined from **result timestamps**, never from
+plan or run creation or completion dates. Closed runs are not assumed to be
+immutable.
+
+1. Results (`get_results_for_run` with `created_after = L`) and tests are
+   fetched for open runs and runs created within the window.
+2. Results are fetched for every other discovered run, so a late result or
+   triage update in an old (even completed) run is found. Tests are fetched
+   for runs with results inside the window.
+3. For case/application/platform keys that have a test instance but no result
+   yet, tests of older runs in that group are fetched, ordered by their newest
+   result timestamp. Scanning stops once every pending key has a result and
+   the next run's newest result is older than all of them. Keys created only
+   by platform expansion do not trigger this scan; if unscanned runs could hold
+   a result for them, their coverage is `partial`.
+
+`history.coverage` states how far `latest_known` is backed by the scan:
+
+| Coverage | Meaning |
+|---|---|
+| `complete` | No lookback limit, discovery complete, and every run that could hold a newer result for this key was scanned. `is_verified_latest` is true only here. |
+| `lookback_limited` | As complete, but only within the lookback period (see discovery). |
+| `partial` | Incomplete discovery, or relevant runs not scanned (request budget). |
+
+Even `complete` is limited to the runs TestRail returns for the project and
+to the application/platform attribution of each run.
+
+### Missing-result states
+
+| State | Meaning |
+|---|---|
+| `result_available` | A final result exists (window or lookback). |
+| `untested` | The case is in a collected run but has no status-bearing result. |
+| `not_applicable` | The final status is not applicable, or configured applicability metadata excludes the case. |
+| `not_included_in_run` | Runs for the application/platform were collected; the case is not in them. |
+| `unknown_applicability` | As above, but applicability is configured and the case's value is missing. |
+| `no_run_for_platform` | No run for this application/platform was found; this is not a failure. |
+| `no_result_within_lookback` | The case was executed (per its current status) or runs exist, but no result record lies within the lookback. |
+
+Keys are created for each case on every platform observed in the collected
+runs, so missing platforms are visible. No execution records are created for
+missing tests.
+
+**Applicability** is used only when configured: set
+`mappings.custom_fields.applicability` to a case field system name and list
+the matching raw values (IDs or strings) in `applicability_values` for each
+application. The value is read from `get_tests`; only cases lacking it there
+trigger one bulk `get_cases` request per suite.
+
+### API request budget
+
+- No per-case requests are made (`get_case`, `get_results_for_case`).
+- Requests: discovery (2 `get_runs` + 2 `get_plans` listings plus one
+  `get_plan` per plan), one `get_results_for_run` per run (more when
+  paginated), and one `get_tests` per run that is needed.
+- Because closed runs may still receive results, every discovered run's
+  results are checked; a long lookback over a busy project can need many
+  requests. Increase `http.max_requests_per_execution` or shorten the lookback.
+- If the budget runs out, collection stops, keeps what was fully collected,
+  sets `report.budget_exhausted`, and marks affected histories `partial`.
+
 ## Security
 
 - The API client is **read-only**: it only issues HTTP GET requests and only
@@ -251,7 +408,8 @@ are listed in `resolver.unmatched_mappings` instead of failing.
   implementing the same interface.
 - `Credentials` objects redact both fields from `repr()`/`str()`; error
   messages never include credential values or the Authorization header.
-- Result comments are excluded from model `repr()` and never logged.
+- Result comments are excluded from model `repr()` and never logged. Use
+  `ResolvedResult.failure_summary()` for a sanitized summary.
 - HTTPS is required unless `allow_insecure_http = true` is set explicitly.
   Redirects are not followed, so credentials are never sent to another host.
 - A per-execution request budget (`http.max_requests_per_execution`) prevents
@@ -266,7 +424,8 @@ src/testrail_stability_analyzer/
 ├── config/      settings.py (typed settings, validation), auth.py (credential providers)
 ├── api/         client.py (read-only client), transport.py (HTTP), errors.py
 ├── models/      metadata.py, execution.py (typed entities), statuses.py (status resolution)
-├── collection/  planned: historical data collection
+├── collection/  discovery.py, classification.py, outcomes.py, history.py,
+│                collector.py, sanitize.py (historical execution collection)
 ├── analysis/    planned: stability and flakiness metrics
 └── export/      planned: XML / JSON / Excel reports
 config/config.example.toml
@@ -294,11 +453,14 @@ tests/integration/   reserved for opt-in live tests
   - request budget enforcement (including retries).
 - Typed models for TestRail entities with custom and unknown field preservation.
 - Status resolution with configurable category mappings and explicit `unknown`.
+- Historical execution collection: plan and standalone run discovery,
+  application/platform/execution-type classification and filters, final
+  outcome per run with retained retries, grouping per case/application/
+  platform, history window and cap, latest known result with coverage, missing
+  and not-applicable states, sanitized failure summaries.
 
 ### Not implemented yet
 
-- Historical data collection and latest-result resolution.
-- Application/platform matching logic (only the configuration exists).
 - Stability, flakiness, and automation-issue metrics.
 - XML, JSON, and Excel export.
 - Command-line interface.
@@ -315,3 +477,23 @@ tests/integration/   reserved for opt-in live tests
   it costs one request per plan in the project (after pre-filtering).
 - `get_results_for_case` supports only `status_id`, matching the TestRail API.
 - Retry delays are deterministic (no jitter); intended for a single process.
+- **Old completed runs receiving recent results.** It has not been verified
+  whether TestRail can add results to completed runs, so the collector does
+  not assume it cannot. Every discovered run's results are checked, which
+  costs at least one request per run. Completed runs and plans **created
+  before the lookback start** are not discovered at all, so a recent result
+  added to such a run is not found. Every history is then marked
+  `lookback_limited` (never `complete`), and the report lists this
+  limitation. Set `history.lookback_limit_days = 0` to remove it, at the cost
+  of scanning the whole project.
+- Collection covers cases that appear in collected runs; a case executed only
+  in runs whose tests were not fetched (no recent results) has no history.
+- Older outcomes for a key are fetched only when the key has no newer result,
+  so `history.outcomes` does not list every historical execution.
+- Results created before the lookback start are not fetched, also for open
+  runs created earlier (`RunOutcome.evidence_truncated`).
+- Discovery relies on TestRail's `created_after`/`created_before`/
+  `is_completed` filters; their boundary-second semantics are handled by
+  overlapping queries.
+- Custom field values (e.g. dropdown IDs) are not decoded; applicability
+  values are matched as configured.

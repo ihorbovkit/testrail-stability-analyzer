@@ -14,9 +14,9 @@ project_id = 1
 [history]
 window_days = 60
 max_runs = 10
-# Optional cap (days) on the search for the latest known result. Unset or 0
-# means no limit, so results older than the history window are still found.
-# lookback_limit_days = 365
+# Extended lookback (days) for the latest known result, which may be older
+# than the history window. 0 means no limit (scans the whole project history).
+lookback_limit_days = 365
 
 [http]
 connect_timeout_seconds = 10.0
@@ -46,12 +46,28 @@ name = "Platform X"
 patterns = ['(?i)\bplatform-x\b']
 sources = ["configuration", "run_name"]
 
-# Logical field name -> TestRail field system name.
+# Optional execution types (e.g. automated vs. manual runs), matched like the above.
+# [[mappings.execution_types]]
+# name = "Automated"
+# patterns = ['(?i)\bautomated\b']
+
+# Logical field name -> TestRail field system name. Recognized logical names:
+#   application_version  result field holding the tested version (default: "version")
+#   applicability        case field listing the applications a case applies to;
+#                        set applicability_values on each application to use it
 [mappings.custom_fields]
 # application_version = "version"
+# applicability = "custom_target_applications"
 
 # Analyzer category -> TestRail status system names or numeric IDs.
 # Categories: passed, failed, blocked, not_run, retest, not_applicable,
 # automation_issue. Custom statuses are optional.
 [mappings.statuses]
 # automation_issue = ["automation_issue"]
+
+# Optional include filters by mapped name. Runs resolved to other names are
+# excluded; runs that cannot be classified are reported but not collected.
+[filters]
+applications = []
+platforms = []
+execution_types = []

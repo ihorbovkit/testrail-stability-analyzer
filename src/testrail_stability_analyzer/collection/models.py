@@ -82,6 +82,7 @@ class DiscoveryResult:
     runs: tuple[DiscoveredRun, ...]
     complete: bool
     limitations: tuple[str, ...] = ()
+    budget_exhausted: bool = False
 
     @property
     def included(self) -> tuple[DiscoveredRun, ...]:

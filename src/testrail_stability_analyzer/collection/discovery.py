@@ -13,6 +13,9 @@ With a lookback start ``L`` the following are discovered:
 Completed runs and plans created before ``L`` are not listed, so results they
 may hold after ``L`` are outside the scan; collection reports this as a
 lookback limitation. Without a lookback limit every run and plan is listed.
+
+The configured suite is applied client-side, so runs from other suites are
+recorded as excluded instead of being filtered out by the server unseen.
 """
 
 from __future__ import annotations
@@ -37,7 +40,7 @@ class RunDiscovery:
     def discover(self, lookback_start: datetime | None) -> DiscoveryResult:
         found: dict[int, DiscoveredRun] = {}
         limitations: list[str] = []
-        complete = True
+        budget_exhausted = False
         try:
             for run in self._standalone_runs(lookback_start):
                 self._add(found, run, None, lookback_start)
@@ -46,7 +49,7 @@ class RunDiscovery:
                 for run in detailed.runs:
                     self._add(found, run, detailed, lookback_start)
         except TestRailRequestBudgetExceeded:
-            complete = False
+            budget_exhausted = True
             limitations.append("request budget exhausted during run discovery; some runs were not discovered")
         if lookback_start is not None:
             limitations.append(
@@ -54,26 +57,26 @@ class RunDiscovery:
                 "any results they received later are not included"
             )
         runs = tuple(sorted(found.values(), key=lambda discovered: discovered.run_id))
-        return DiscoveryResult(runs, complete, tuple(limitations))
+        return DiscoveryResult(runs, not budget_exhausted, tuple(limitations), budget_exhausted)
 
     # -- listing -----------------------------------------------------------
 
     def _standalone_runs(self, lookback_start: datetime | None) -> Iterator[Run]:
-        project_id, suite_id = self._settings.testrail.project_id, self._settings.testrail.suite_id
+        project_id = self._settings.testrail.project_id
         if lookback_start is None:
-            yield from self._client.get_runs(project_id, suite_id=suite_id)
+            yield from self._client.get_runs(project_id)
             return
-        boundary = math.floor(lookback_start.timestamp())
-        yield from self._client.get_runs(project_id, suite_id=suite_id, created_after=boundary)
-        # +1 s: overlap is deduplicated, a gap at the boundary second would lose runs.
-        yield from self._client.get_runs(project_id, suite_id=suite_id, created_before=boundary + 1, is_completed=False)
+        boundary = created_after_cutoff(lookback_start)
+        yield from self._client.get_runs(project_id, created_after=boundary)
+        # Complement: open runs created before the cutoff; any overlap is deduplicated.
+        yield from self._client.get_runs(project_id, created_before=boundary + 1, is_completed=False)
 
     def _plans(self, lookback_start: datetime | None) -> Iterator[Plan]:
         project_id = self._settings.testrail.project_id
         if lookback_start is None:
             listings: Iterable[Iterable[Plan]] = (self._client.get_plans(project_id),)
         else:
-            boundary = math.floor(lookback_start.timestamp())
+            boundary = created_after_cutoff(lookback_start)
             listings = (
                 self._client.get_plans(project_id, created_after=boundary),
                 self._client.get_plans(project_id, created_before=boundary + 1, is_completed=False),
@@ -119,6 +122,15 @@ class RunDiscovery:
         if naming.run_name_patterns and not _matches_any(naming.run_name_patterns, run.name):
             return RunDecision.EXCLUDED_BY_NAME, "run name does not match naming.run_name_patterns"
         return _apply_filters(classification, self._settings.filters)
+
+
+def created_after_cutoff(moment: datetime) -> int:
+    """The ``created_after`` value that includes everything at or after ``moment``.
+
+    ``created_after`` may be compared strictly, so the largest whole second
+    before ``moment`` is used; if it is inclusive, one extra second is returned.
+    """
+    return math.ceil(moment.timestamp()) - 1
 
 
 def _matches_any(patterns: Iterable[re.Pattern[str]], text: str) -> bool:

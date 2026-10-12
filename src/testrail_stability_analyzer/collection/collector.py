@@ -27,7 +27,7 @@ from typing import Any
 from ..api import TestRailClient, TestRailRequestBudgetExceeded
 from ..config.settings import DimensionMapping, Settings
 from ..models import Result, StatusResolver, Test
-from .discovery import RunDiscovery
+from .discovery import RunDiscovery, created_after_cutoff
 from .history import Group, build_histories, group_of
 from .models import (
     Applicability,
@@ -99,6 +99,7 @@ class _Session:
     # -- orchestration -----------------------------------------------------
 
     def run(self, now: datetime, discovery: DiscoveryResult) -> CollectionReport:
+        self.exhausted = discovery.budget_exhausted
         included = sorted(discovery.included, key=_priority)
         early = [run for run in included if self._active_in_window(run)]
         for run in early:
@@ -197,7 +198,7 @@ class _Session:
             return None
 
     def _fetch_results(self, run: DiscoveredRun) -> None:
-        created_after = None if self.lookback_start is None else math.floor(self.lookback_start.timestamp())
+        created_after = None if self.lookback_start is None else created_after_cutoff(self.lookback_start)
         fetched = self._call(lambda: list(self.client.get_results_for_run(run.run_id, created_after=created_after)))
         if fetched is None:
             return

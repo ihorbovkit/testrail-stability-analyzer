@@ -101,6 +101,19 @@ class DiscoveryLookbackTests(unittest.TestCase):
         self.assertNotIn("get_plan/901", self.server.calls)
         self.assertTrue(any("before the lookback start" in note for note in result.limitations))
 
+    def test_completed_runs_and_plans_created_exactly_at_the_lookback_start_are_included(self):
+        server = FakeTestRail()
+        boundary = int(LOOKBACK.timestamp())
+        server.add_run(fx.run(30, "App-A Plat-X", created=boundary, completed=boundary + 60))
+        server.add_run(fx.run(31, "App-A Plat-X", created=boundary - 1, completed=boundary + 60))
+        server.add_plan(902, "App-A boundary plan", created=boundary, completed=boundary + 60)
+        server.add_plan_run(902, fx.run(32, "Plat-X", created=boundary, completed=boundary + 60))
+        result = discover(server)
+        self.assertEqual({r.run_id: r.decision for r in result.runs}, {
+            30: RunDecision.INCLUDED,
+            32: RunDecision.INCLUDED,
+        })
+
     def test_unlimited_lookback_lists_everything(self):
         result = discover(self.server, lookback=None)
         self.assertEqual(sorted(r.run_id for r in result.runs), [1, 2, 3, 10, 11, 20])
@@ -154,9 +167,11 @@ class DiscoveryFilterTests(unittest.TestCase):
         result = discover(self.server, settings)
         decisions = {r.run_id: r.decision for r in result.runs}
         self.assertEqual(decisions[4], RunDecision.EXCLUDED_BY_NAME)
-        # The fake applies suite_id server-side for standalone runs, like TestRail.
-        self.assertNotIn(6, decisions)
+        self.assertEqual(decisions[6], RunDecision.EXCLUDED_BY_FILTER)
+        self.assertIn("suite 99", result.runs[-1].reason)
         self.assertEqual(decisions[1], RunDecision.INCLUDED)
+        # The suite is filtered client-side, so out-of-suite runs are still listed.
+        self.assertFalse(any("suite_id" in params for params in self.server.params))
 
     def test_plan_run_from_other_suite_is_excluded_with_reason(self):
         self.server.add_plan(900, "App-A")

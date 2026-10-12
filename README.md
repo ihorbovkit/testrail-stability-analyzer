@@ -271,6 +271,10 @@ With a lookback start `L` (now − `lookback_limit_days`), discovery lists:
 - runs and plans created before `L` that are still open, and the child runs
   of such plans that are open or created after `L`.
 
+`L` itself is inclusive: `created_after` is sent as the last whole second
+before `L`, so nothing at `L` is lost if TestRail compares strictly (at most
+one extra second is returned otherwise). Results are fetched the same way.
+
 Completed runs and plans created before `L` are not listed; results they may
 have received after `L` are therefore not found. This is reported as a
 limitation. With `lookback_limit_days = 0` everything is listed (one
@@ -293,7 +297,9 @@ Nothing is guessed.
   filter are `unclassified`: reported for review, but their results are not
   downloaded. Without filters, every discovered run is collected.
 - `naming.*_name_patterns` and `testrail.suite_id` exclusions are recorded
-  with a reason, never silently dropped.
+  with a reason, never silently dropped. The suite is filtered client-side
+  for standalone and plan runs alike, so runs from other suites are still
+  listed (as `excluded_by_filter`).
 
 ### Final outcome per run
 

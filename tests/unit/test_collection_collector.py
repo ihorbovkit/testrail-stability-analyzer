@@ -413,4 +413,21 @@ class EdgeCaseTests(unittest.TestCase):
         lookback = int(report.lookback_start.timestamp())
         self.assertEqual(lookback, days_ago(365))
         params = [p for c, p in zip(server.calls, server.params) if c == "get_results_for_run/1"]
-        self.assertEqual(params, [{"created_after": str(lookback)}])
+        self.assertEqual(params, [{"created_after": str(lookback - 1)}])
+
+    def test_result_exactly_at_the_lookback_start_is_collected(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X long-running", created=days_ago(400)),
+            tests=[fx.test(1, 100, 1, status_id=FAILED)],
+            results=[fx.result(1, 1, FAILED, days_ago(365)), fx.result(2, 1, PASSED, days_ago(365, seconds=-1))],
+        )
+        h = history(collect(server), 100, "App A", "Platform X")
+        self.assertEqual([r.result.id for r in h.latest_known.results], [1])
+
+    def test_budget_exhausted_during_discovery_is_reported(self):
+        report = collect(FakeTestRail(), fx.settings(http={"max_requests_per_execution": 1}))
+        self.assertFalse(report.discovery.complete)
+        self.assertTrue(report.discovery.budget_exhausted)
+        self.assertTrue(report.budget_exhausted)
+        self.assertEqual(report.histories, ())

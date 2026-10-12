@@ -1,0 +1,38 @@
+[project]
+name = "testrail-stability-analyzer"
+version = "0.1.0"
+description = "Read-only TestRail API v2 analyzer for test stability, flakiness, and automation-maintenance reporting."
+readme = "README.md"
+requires-python = ">=3.13,<4.0"
+keywords = ["testrail", "test-stability", "flaky-tests", "reporting"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Testing",
+    "Typing :: Typed",
+]
+# Runtime uses the standard library only.
+dependencies = []
+
+[tool.poetry]
+packages = [{ include = "testrail_stability_analyzer", from = "src" }]
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=8.3"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# Domain classes are named TestRail*; only collect classes ending in "Tests".
+python_classes = ["*Tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not live"]
+markers = [
+    "live: calls a real TestRail instance; opt-in only (run with -m live and credentials set)",
+]

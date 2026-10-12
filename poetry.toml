@@ -1,0 +1,4 @@
+# Keep the virtual environment inside the project (.venv/, git-ignored).
+[virtualenvs]
+create = true
+in-project = true

@@ -327,9 +327,10 @@ outcome is the **latest record that carries a status**:
   with HTML, URLs, email addresses, tokens, session IDs, long hex IDs/UUIDs,
   and file paths replaced by placeholders. Values of credential-like keys
   (`password`, `token`, `api_key`, `secret`, `session…`, …) are redacted in
-  `key=value`, `key: value`, and quoted JSON/attribute forms. Markup is
-  removed both before and after HTML entities are decoded, so encoded tags
-  such as `&lt;img …&gt;` do not survive. The summary is **plain text**, not
+  `key=value`, `key: value`, and quoted JSON/attribute forms. Markup (`<`
+  followed by a letter, `/`, `!`, or `?`) is removed both before and after
+  HTML entities are decoded, so encoded tags such as `&lt;img …&gt;` do not
+  survive, while literal comparisons such as `<200>` are kept. The summary is **plain text**, not
   HTML: it can still contain `<`, `>`, or `&` (e.g. `expected <200>`), so
   HTML reports must escape it. Redaction is best-effort; summaries must still
   not be sent to external services.
@@ -344,6 +345,10 @@ sorted by the actual final-result timestamp, newest first.
 - `history.window`: outcomes whose final result falls within
   `history.window_days`, capped at `history.max_runs`; `window_total` is the
   count before the cap.
+- `history.window_complete` is false when runs that may hold results inside
+  the window were not scanned (request budget, incomplete discovery), so the
+  window can miss executions even when `latest_known` is fully backed. A note
+  is added to `coverage_notes`.
 - Exact duplicate result records (e.g. across pages) are merged; records with
   the same ID but different content are listed in `report.conflicts`.
 
@@ -379,7 +384,7 @@ to the application/platform attribution of each run.
 |---|---|
 | `result_available` | A final result exists (window or lookback). |
 | `untested` | The case is in a collected run but has no status-bearing result. |
-| `not_applicable` | The final status is not applicable, or configured applicability metadata excludes the case. |
+| `not_applicable` | The final status is not applicable, the test's current status is not applicable (without results in the lookback), or configured applicability metadata excludes the case. |
 | `not_included_in_run` | Runs for the application/platform were collected; the case is not in them. |
 | `unknown_applicability` | As above, but applicability is configured and the case's value is missing. |
 | `no_run_for_platform` | No run for this application/platform was found; this is not a failure. |

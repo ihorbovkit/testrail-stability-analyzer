@@ -15,10 +15,9 @@ from typing import Final
 DEFAULT_MAX_LENGTH: Final = 200
 
 _SCRIPT_OR_STYLE: Final = re.compile(r"<(script|style)\b.*?</\1\s*>", re.IGNORECASE | re.DOTALL)
-_TAG: Final = re.compile(r"<[^>]*>")
-# After unescaping: anything that could open markup (letter, "/", "!" or "?" after "<"),
-# even without a closing ">". Literal comparisons such as "<200>" or "a < b" are kept.
-_DECODED_MARKUP: Final = re.compile(r"<[A-Za-z/!?][^>]*(?:>|$)")
+# Anything that could open markup (letter, "/", "!" or "?" after "<"), even without a
+# closing ">". Literal comparisons such as "<200>" or "a < b" are kept.
+_MARKUP: Final = re.compile(r"<[A-Za-z/!?][^>]*(?:>|$)")
 _SUBSTITUTIONS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"\b[a-z][a-z0-9+.-]*://\S+", re.IGNORECASE), "[url]"),
     (re.compile(r"\bwww\.\S+", re.IGNORECASE), "[url]"),
@@ -53,10 +52,10 @@ def sanitize_comment(comment: str | None, *, max_length: int = DEFAULT_MAX_LENGT
         raise ValueError("max_length must be >= 1")
     if not comment:
         return None
-    # Strip markup before unescaping so escaped text such as "&lt;5&gt;" is kept, then
-    # strip markup that only appears after unescaping (e.g. "&lt;img onerror=...&gt;").
-    text = html.unescape(_TAG.sub(" ", _SCRIPT_OR_STYLE.sub(" ", comment)))
-    text = _DECODED_MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", text))
+    # Strip markup, unescape, then strip markup that only appears after unescaping
+    # (e.g. "&lt;img onerror=...&gt;").
+    text = html.unescape(_MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", comment)))
+    text = _MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", text))
     for pattern, replacement in _SUBSTITUTIONS:
         text = pattern.sub(replacement, text)
     text = _WHITESPACE.sub(" ", text).strip()

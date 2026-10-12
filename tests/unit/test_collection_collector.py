@@ -216,6 +216,39 @@ class LatestKnownTests(unittest.TestCase):
         self.assertIn("test instances were not scanned", h.coverage_notes[0])
         self.assertEqual(history(report, 100, "App A", "Platform X").coverage, Coverage.LOOKBACK_LIMITED)
 
+    def test_unscanned_run_with_results_in_the_window_flags_an_incomplete_window(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[fx.test(1, 100, 1, status_id=PASSED)],
+            results=[fx.result(1, 1, PASSED, days_ago(4))],
+        )
+        server.add_run(
+            # Created before the window, with a late result inside it.
+            fx.run(2, "App-A Plat-X", created=days_ago(70), completed=days_ago(29)),
+            tests=[fx.test(2, 100, 2, status_id=FAILED)],
+            results=[fx.result(2, 2, FAILED, days_ago(30))],
+        )
+        # 4 discovery + 2 for run 1 + 1 result request for run 2; its tests do not fit.
+        report = collect(server, fx.settings(http={"max_requests_per_execution": 7}))
+        h = history(report, 100, "App A", "Platform X")
+        self.assertEqual(h.latest_known.run_id, 1)
+        # The latest result is still backed: the unscanned run only holds older results.
+        self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
+        self.assertFalse(h.window_complete)
+        self.assertEqual(h.window_total, 1)
+        self.assertTrue(any("history window may be incomplete" in note for note in h.coverage_notes))
+
+    def test_fully_scanned_history_window_is_complete(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[fx.test(1, 100, 1, status_id=PASSED)],
+            results=[fx.result(1, 1, PASSED, days_ago(4))],
+        )
+        server.add_run(fx.run(2, "App-A Plat-X old", created=days_ago(200), completed=days_ago(199)), tests=[], results=[])
+        self.assertTrue(history(collect(server), 100, "App A", "Platform X").window_complete)
+
     def test_run_with_unknown_completion_flag_is_treated_as_possibly_open(self):
         server = FakeTestRail()
         server.add_run(
@@ -381,6 +414,17 @@ class MissingStateTests(unittest.TestCase):
         self.assertTrue(all(h.applicability is Applicability.NOT_CONFIGURED for h in report.histories))
         # No execution records are fabricated for missing tests.
         self.assertEqual(len(report.outcomes), 6)
+
+    def test_current_not_applicable_status_without_fetched_results(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[fx.test(1, 100, 1, status_id=NOT_APPLICABLE), fx.test(2, 101, 1, status_id=FAILED)],
+            results=[],
+        )
+        report = collect(server)
+        self.assertEqual(history(report, 100, "App A", "Platform X").state, AvailabilityState.NOT_APPLICABLE)
+        self.assertEqual(history(report, 101, "App A", "Platform X").state, AvailabilityState.NO_RESULT_WITHIN_LOOKBACK)
 
     def applicability_settings(self):
         return fx.settings(

@@ -137,6 +137,7 @@ class _Session:
                 self.applicability_unchecked, "applicability metadata could not be fetched (request budget)"
             ),
             lookback_limited=self.lookback_start is not None,
+            discovery_complete=discovery.complete,
         )
         return CollectionReport(
             collected_at=now,

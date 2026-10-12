@@ -62,6 +62,7 @@ def build_histories(
     global_notes: Sequence[str] = (),
     case_notes: Mapping[int, str] | None = None,
     lookback_limited: bool = False,
+    discovery_complete: bool = True,
 ) -> tuple[ExecutionHistory, ...]:
     """Build one history per key.
 
@@ -86,6 +87,7 @@ def build_histories(
         key_applicability = applicability(key.case_id, key.application)
         key_notes = [*global_notes, *([case_notes[key.case_id]] if case_notes and key.case_id in case_notes else [])]
         coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited)
+        window_complete, window_notes = _window_completeness(group, gaps, window_start, discovery_complete)
         histories.append(
             ExecutionHistory(
                 key=key,
@@ -96,7 +98,8 @@ def build_histories(
                 window_total=len(in_window),
                 latest_known=latest,
                 coverage=coverage,
-                coverage_notes=notes,
+                coverage_notes=notes + window_notes,
+                window_complete=window_complete,
             )
         )
     return tuple(histories)
@@ -125,11 +128,12 @@ def _state(
     if applicability is Applicability.NOT_APPLICABLE:
         return AvailabilityState.NOT_APPLICABLE
     if ordered:
-        # Included in a run but no status-bearing record collected. If TestRail
-        # reports a non-untested current status, the results predate the lookback.
-        executed = any(
-            o.current_status is not None and o.current_status.category is not StatusCategory.NOT_RUN for o in ordered
-        )
+        # Included in a run but no status-bearing record collected. A current status
+        # other than untested means earlier results exist, before the lookback.
+        current = {o.current_status.category for o in ordered if o.current_status is not None}
+        if StatusCategory.NOT_APPLICABLE in current:
+            return AvailabilityState.NOT_APPLICABLE
+        executed = bool(current - {StatusCategory.NOT_RUN})
         return AvailabilityState.NO_RESULT_WITHIN_LOOKBACK if executed else AvailabilityState.UNTESTED
     if group in scanned_groups:
         if applicability is Applicability.UNKNOWN:
@@ -161,6 +165,26 @@ def _coverage(
     if lookback_limited:
         return Coverage.LOOKBACK_LIMITED, ("results before the lookback start were not searched",)
     return Coverage.COMPLETE, ()
+
+
+def _window_completeness(
+    group: Group | None, gaps: Mapping[Group, Sequence[RunScan]], window_start: datetime, discovery_complete: bool
+) -> tuple[bool, tuple[str, ...]]:
+    if group is None:
+        return True, ()  # unidentified keys consist of one fully scanned run
+    notes = [] if discovery_complete else ["history window may be incomplete: run discovery was incomplete"]
+    unscanned = [scan.run_id for scan in gaps.get(group, ()) if _may_hold_window_results(scan, window_start)]
+    if unscanned:
+        notes.append(
+            f"history window may be incomplete: {len(unscanned)} run(s) with possible results in it were not scanned"
+        )
+    return not notes, tuple(notes)
+
+
+def _may_hold_window_results(scan: RunScan, window_start: datetime) -> bool:
+    if not scan.results_fetched or scan.active_in_window or scan.has_untimed_results:
+        return True
+    return scan.newest_result_on is not None and scan.newest_result_on >= window_start
 
 
 def _may_hold_newer(scan: RunScan, latest: RunOutcome | None) -> bool:

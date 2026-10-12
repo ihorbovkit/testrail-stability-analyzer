@@ -213,6 +213,9 @@ class ExecutionHistory:
     latest_known: RunOutcome | None
     coverage: Coverage
     coverage_notes: tuple[str, ...] = ()
+    # False when runs that may hold results inside the window were not scanned, so
+    # ``window``/``window_total`` can miss executions even if ``latest_known`` is backed.
+    window_complete: bool = True
 
     @property
     def is_verified_latest(self) -> bool:

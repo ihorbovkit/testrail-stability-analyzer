@@ -175,6 +175,12 @@ class SanitizeTests(unittest.TestCase):
             with self.subTest(comment=comment):
                 self.assertEqual(sanitize_comment(comment, max_length=500), expected)
 
+    def test_raw_literal_comparisons_are_kept(self):
+        self.assertEqual(
+            sanitize_comment("expected <200> got <500>; <b>bold</b> a<b", max_length=500),
+            "expected <200> got <500>; bold a",
+        )
+
     def test_truncates_and_handles_empty(self):
         self.assertIsNone(sanitize_comment(None))
         self.assertIsNone(sanitize_comment("<br/>  "))

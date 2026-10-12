@@ -11,13 +11,14 @@ iterating, but arguments are validated immediately.
 from __future__ import annotations
 
 import base64
+import email.utils
 import itertools
 import json
 import math
 import re
 import time
 from collections.abc import Callable, Iterable, Iterator, Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Final
 from urllib.parse import urlencode
 
@@ -276,8 +277,9 @@ class TestRailClient:
 
     def _iter_plan_runs(self, project_id: int, params: Mapping[str, QueryValue]) -> Iterator[Run]:
         # Pre-filter plans only where that cannot exclude matching runs: a plan's
-        # runs are not created before the plan, and share its completion state.
-        plan_params = {key: params[key] for key in ("created_before", "is_completed") if key in params}
+        # runs are not created before the plan. Completion is checked per run,
+        # since runs in an active plan can be closed independently.
+        plan_params = {key: params[key] for key in ("created_before",) if key in params}
         for summary in self._iter_models(f"get_plans/{project_id}", "plans", Plan.from_api, plan_params):
             for run in self.get_plan(summary.id).runs:
                 if _run_matches(run, params):
@@ -438,7 +440,7 @@ def _timestamp(value: object, name: str) -> int:
     if isinstance(value, datetime):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError(f"{name} must be a timezone-aware datetime")
-        return math.floor(value.timestamp())
+        value = math.floor(value.timestamp())
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"{name} must be an aware datetime or a non-negative Unix timestamp")
     return value
@@ -531,12 +533,26 @@ def _error_message(response: HttpResponse) -> str:
     return message[:_MAX_ERROR_MESSAGE_LENGTH]
 
 
-def _retry_after(response: HttpResponse) -> float | None:
+def _retry_after(response: HttpResponse, now: datetime | None = None) -> float | None:
+    """Parse ``Retry-After`` as delay-seconds or an HTTP-date; ``None`` if absent or invalid."""
     value = response.headers.get("retry-after")
     if value is None:
         return None
+    value = value.strip()
     try:
         seconds = float(value)
     except ValueError:
+        return _retry_after_date(value, now)
+    # Negative delay-seconds are invalid, not "retry immediately".
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
+
+
+def _retry_after_date(value: str, now: datetime | None) -> float | None:
+    try:
+        retry_at = email.utils.parsedate_to_datetime(value)
+    except (TypeError, ValueError, IndexError):
         return None
-    return max(seconds, 0.0) if math.isfinite(seconds) else None
+    if retry_at.tzinfo is None:  # "-0000" zone: UTC per RFC 5322
+        retry_at = retry_at.replace(tzinfo=UTC)
+    # A date in the past means the server already permits a retry.
+    return max((retry_at - (now or datetime.now(UTC))).total_seconds(), 0.0)

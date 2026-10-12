@@ -1,4 +1,6 @@
 import unittest
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 from testrail_stability_analyzer.api import (
     HttpResponse,
@@ -43,10 +45,18 @@ class RateLimitRetryTests(unittest.TestCase):
         retry.client.get("get_case/1")
         self.assertEqual(retry.sleeps, [1.0, 2.0, 3.0])  # 4.0 capped at max_retry_delay_seconds
 
-    def test_malformed_retry_after_falls_back_to_backoff(self):
-        retry = RetryClient(rate_limited("soon"), ok({}))
-        retry.client.get("get_case/1")
-        self.assertEqual(retry.sleeps, [1.0])
+    def test_malformed_or_negative_retry_after_falls_back_to_backoff(self):
+        for value in ("soon", "-5"):
+            retry = RetryClient(rate_limited(value), ok({}))
+            with self.subTest(value=value):
+                retry.client.get("get_case/1")
+                self.assertEqual(retry.sleeps, [1.0])
+
+    def test_http_date_retry_after_beyond_maximum_is_not_waited_for(self):
+        retry = RetryClient(rate_limited(format_datetime(datetime.now(UTC) + timedelta(hours=1), usegmt=True)), ok({}))
+        with self.assertRaises(TestRailRateLimitError):
+            retry.client.get("get_case/1")
+        self.assertEqual(retry.sleeps, [])
 
     def test_retry_exhaustion_raises_last_error_with_context(self):
         retry = RetryClient(*[rate_limited("1")] * 4)

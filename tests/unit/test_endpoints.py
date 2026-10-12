@@ -151,6 +151,7 @@ class CollectionEndpointTests(unittest.TestCase):
         client, transport, _ = make_client()
         invalid = [
             {"created_after": datetime(2024, 1, 1)},  # naive datetime
+            {"created_after": datetime(1969, 12, 31, tzinfo=UTC)},  # negative timestamp
             {"created_after": -1},
             {"created_after": True},
             {"created_by": []},
@@ -229,9 +230,17 @@ class GetRunsTests(unittest.TestCase):
         )
         self.assertEqual([run.id for run in runs], [503])
         # Only filters that cannot exclude matching runs are sent to get_plans.
-        self.assertEqual(
-            paths(transport)[1], f"get_plans/1&created_before={payloads.T0 + 100}&is_completed=0"
+        self.assertEqual(paths(transport)[1], f"get_plans/1&created_before={payloads.T0 + 100}")
+
+    def test_completed_run_in_active_plan_is_found(self):
+        entry = payloads.plan_entry("e1", 900, [(501, None, 11), (502, None, 12)])
+        entry["runs"][0]["is_completed"] = True
+        client, transport, _ = make_client(
+            ok({"runs": []}), ok({"plans": [payloads.plan(900)]}), ok(payloads.plan(900, entries=[entry]))
         )
+        runs = list(client.get_runs(1, is_completed=True, include_plan_runs=True))
+        self.assertEqual([run.id for run in runs], [501])
+        self.assertEqual(paths(transport)[:2], ["get_runs/1&is_completed=1", "get_plans/1"])
 
 
 if __name__ == "__main__":

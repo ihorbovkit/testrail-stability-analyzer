@@ -168,8 +168,9 @@ All methods issue HTTP GET only and return typed models (`testrail_stability_ana
 - TestRail's `get_runs` returns only standalone runs. `include_plan_runs=True`
   is a **client-side** option (not an API parameter): it also lists plans and
   fetches each plan to yield its runs, applying the same filters per run. This
-  costs one extra request per plan; only `created_before` and `is_completed`
-  are used to pre-filter plans, since other filters could exclude matching runs.
+  costs one extra request per plan; only `created_before` is used to
+  pre-filter plans, since other filters (including `is_completed`: runs in an
+  active plan can be closed independently) could exclude matching runs.
 - Prefer bulk methods (`get_tests`, `get_results_for_run`) over per-case calls.
 - Raw JSON access remains available via `get(endpoint, params)` and
   `get_paginated(endpoint, collection_key, params)`.
@@ -187,7 +188,8 @@ read-only endpoints. Malformed pages raise `TestRailResponseError`.
 - Retried: HTTP 429, 502, 503, 504, and network failures/timeouts (safe because
   every request is a read-only GET).
 - Never retried: 401, 403, and other 4xx/5xx errors.
-- A valid `Retry-After` header (429/503) is honoured. If it exceeds
+- A valid `Retry-After` header (429/503), either delay-seconds or an
+  HTTP-date, is honoured; negative or malformed values are ignored. If it exceeds
   `http.max_retry_delay_seconds`, the client fails immediately instead of
   waiting. Without the header, delays are `retry_backoff_seconds × 2ⁿ`, capped
   at `max_retry_delay_seconds`.

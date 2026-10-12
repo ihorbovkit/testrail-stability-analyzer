@@ -54,6 +54,14 @@ class MetadataModelTests(unittest.TestCase):
         self.assertTrue(field.applies_to_project(3))
         self.assertFalse(field.applies_to_project(2))
         self.assertEqual(dict(field.extra), {"entity_id": 1})
+        self.assertEqual(dict(config.context), {"is_global": False, "project_ids": [1, 3]})
+        self.assertEqual(dict(config.extra), {})
+
+    def test_custom_field_config_preserves_unknown_keys(self):
+        config = {"id": "c", "context": {"is_global": True, "scope": "new"}, "options": {}, "future": 1}
+        parsed = CustomField.from_api(payloads.case_field(configs=[config])).configs[0]
+        self.assertEqual(dict(parsed.extra), {"future": 1})
+        self.assertEqual(parsed.context["scope"], "new")
 
     def test_custom_result_field_global_without_items(self):
         field = CustomField.from_api(

@@ -1,5 +1,7 @@
 import base64
 import unittest
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 from testrail_stability_analyzer.api import (
     HttpResponse,
@@ -148,8 +150,16 @@ class ErrorHandlingTests(unittest.TestCase):
         error = self.assert_raises_from(ok({}, status=429), TestRailRateLimitError)
         self.assertIsNone(error.retry_after_seconds)
 
-    def test_negative_retry_after_clamped_to_zero(self):
+    def test_negative_retry_after_is_invalid(self):
         error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": "-5"}), TestRailRateLimitError)
+        self.assertIsNone(error.retry_after_seconds)
+
+    def test_retry_after_http_date(self):
+        future = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": future}), TestRailRateLimitError)
+        self.assertTrue(25 <= error.retry_after_seconds <= 30, error.retry_after_seconds)
+        past = "Wed, 21 Oct 2015 07:28:00 GMT"
+        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": past}), TestRailRateLimitError)
         self.assertEqual(error.retry_after_seconds, 0.0)
 
     def test_other_http_errors(self):

@@ -122,22 +122,27 @@ class CustomFieldConfig:
     project_ids: tuple[int, ...] = ()
     is_required: bool | None = None
     default_value: Any = None
-    # Raw options as returned (e.g. "items", "format", "rows"); type-dependent.
+    # Raw context and options as returned; options are type-dependent (e.g. "items", "format", "rows").
+    context: Mapping[str, Any] = _EMPTY
     options: Mapping[str, Any] = _EMPTY
+    extra: Mapping[str, Any] = _EMPTY
 
     @classmethod
     def from_api(cls, data: object) -> Self:
         f = Fields(data, "custom_field.config")
-        context = Fields(f.mapping("context"), "custom_field.config.context")
+        context = f.mapping("context")
+        context_fields = Fields(context, "custom_field.config.context")
         options = f.mapping("options")
         option_fields = Fields(options, "custom_field.config.options")
         return cls(
             id=f.string("id"),
-            is_global=context.boolean("is_global"),
-            project_ids=context.int_list("project_ids"),
+            is_global=context_fields.boolean("is_global"),
+            project_ids=context_fields.int_list("project_ids"),
             is_required=option_fields.boolean("is_required"),
             default_value=options.get("default_value"),
+            context=frozen(context),
             options=frozen(options),
+            extra=f.extra(),
         )
 
     def applies_to_project(self, project_id: int) -> bool:

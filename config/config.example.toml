@@ -1,0 +1,50 @@
+# Example configuration for testrail-stability-analyzer.
+#
+# Copy to config/local/config.toml (git-ignored) and adjust for your instance.
+# Credentials are never stored here: set TESTRAIL_USERNAME and TESTRAIL_API_KEY
+# in your environment instead. Non-secret settings can also be overridden with
+# TESTRAIL_* environment variables (see README.md).
+
+[testrail]
+base_url = "https://example.testrail.io"
+project_id = 1
+# Required only for projects that use multiple test suites.
+# suite_id = 1
+
+[history]
+window_days = 60
+max_runs = 10
+# Lookback when searching for the latest known result; 0 disables the limit.
+lookback_limit_days = 365
+
+[http]
+connect_timeout_seconds = 10.0
+read_timeout_seconds = 30.0
+max_requests_per_execution = 1000
+
+[naming]
+# Optional regular expressions; empty lists include all plans/runs.
+plan_name_patterns = []
+run_name_patterns = []
+
+# Optional application/platform mappings. Patterns are regular expressions
+# matched against the listed sources: plan_name, run_name, configuration.
+[[mappings.applications]]
+name = "Application A"
+patterns = ['(?i)\bapp-a\b']
+sources = ["plan_name", "run_name"]
+
+[[mappings.platforms]]
+name = "Platform X"
+patterns = ['(?i)\bplatform-x\b']
+sources = ["configuration", "run_name"]
+
+# Logical field name -> TestRail field system name.
+[mappings.custom_fields]
+# application_version = "version"
+
+# Analyzer category -> TestRail status system names or numeric IDs.
+# Categories: passed, failed, blocked, not_run, retest, not_applicable,
+# automation_issue. Custom statuses are optional.
+[mappings.statuses]
+# automation_issue = ["automation_issue"]

@@ -4,11 +4,13 @@
 
 # -----------------------------------------------------------------------------
 # Claude Code local configuration
-# Contains credentials (API keys). Ignored entirely for now; selectively
-# un-ignore reviewed, secret-free agents/skills/settings later.
+# Contains credentials (API keys). Everything under .claude/ is ignored by
+# default; only reviewed, secret-free files are un-ignored below.
 # CLAUDE.md (project root) is intentionally NOT ignored.
 # -----------------------------------------------------------------------------
-.claude/
+.claude/*
+!.claude/settings.json
+.claude/settings.local.json
 CLAUDE.local.md
 
 # -----------------------------------------------------------------------------

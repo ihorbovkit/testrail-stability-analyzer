@@ -142,8 +142,8 @@ class HistoryOrderingTests(unittest.TestCase):
         h = history(collect(server), 100, "App A", "Platform X")
         self.assertEqual([o.run_id for o in h.window], [702, 700])
         self.assertEqual(h.window_total, 2)
-        # The older run is not needed: newer results exist and the run's results are older.
-        self.assertEqual([o.run_id for o in h.outcomes], [702, 700])
+        # The older execution within the lookback stays in the full history.
+        self.assertEqual([o.run_id for o in h.outcomes], [702, 700, 701])
 
 
 class LatestKnownTests(unittest.TestCase):
@@ -162,18 +162,43 @@ class LatestKnownTests(unittest.TestCase):
             )
         return server, collect(server, settings)
 
-    def test_latest_result_outside_window_found_with_minimal_scanning(self):
+    def test_latest_result_outside_window_found_from_actual_result_times(self):
         server, report = self.build()
         h = history(report, 100, "App A", "Platform X")
         self.assertEqual(h.latest_known.run_id, 801)
         self.assertEqual(h.state, AvailabilityState.RESULT_AVAILABLE)
         self.assertEqual(h.window, ())
         self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
+        # Every result-bearing run is scanned, newest actual result first.
+        old_tests = [call for call in server.calls if call in ("get_tests/801", "get_tests/802", "get_tests/803")]
+        self.assertEqual(old_tests, ["get_tests/801", "get_tests/802", "get_tests/803"])
+        # The untested instance in the current run is kept alongside the older results.
+        self.assertEqual([o.run_id for o in h.outcomes], [801, 802, 803, 800])
+
+    def test_case_executed_only_outside_the_window_has_a_history(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(810, "App-A Plat-X", created=days_ago(101), completed=days_ago(100)),
+            tests=[fx.test(1, 300, 810, status_id=FAILED)],
+            results=[fx.result(1, 1, FAILED, days_ago(100))],
+        )
+        h = history(collect(server), 300, "App A", "Platform X")
+        self.assertEqual(h.latest_known.run_id, 810)
+        self.assertEqual(h.latest_known.category, StatusCategory.FAILED)
+        self.assertEqual(h.window, ())
+        self.assertEqual(h.state, AvailabilityState.RESULT_AVAILABLE)
+
+    def test_budget_exhaustion_loses_the_oldest_runs_first(self):
+        # 9 requests as below, plus one get_tests: only the run with the newest result.
+        server, report = self.build(fx.settings(http={"max_requests_per_execution": 10}))
+        self.assertTrue(report.budget_exhausted)
         self.assertIn("get_tests/801", server.calls)
         self.assertNotIn("get_tests/802", server.calls)
-        self.assertNotIn("get_tests/803", server.calls)
-        # The untested instance in the current run is kept alongside the older result.
-        self.assertEqual([o.run_id for o in h.outcomes], [801, 800])
+        h = history(report, 100, "App A", "Platform X")
+        self.assertEqual(h.latest_known.run_id, 801)
+        # Unscanned runs only hold older results, so the latest is still backed.
+        self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
+        self.assertTrue(any("request budget" in note for note in report.limitations))
 
     def test_scan_continues_past_runs_that_do_not_contain_the_case(self):
         server = FakeTestRail()
@@ -197,7 +222,7 @@ class LatestKnownTests(unittest.TestCase):
         self.assertEqual(h.latest_known.category, StatusCategory.BLOCKED)
         self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
 
-    def test_case_absent_from_a_platform_does_not_scan_its_history(self):
+    def test_case_absent_from_a_platform_is_not_included(self):
         server = FakeTestRail()
         server.add_run(
             fx.run(800, "App-A Plat-X", created=days_ago(5)),
@@ -210,11 +235,11 @@ class LatestKnownTests(unittest.TestCase):
             results=[fx.result(2, 2, PASSED, days_ago(100))],
         )
         report = collect(server)
-        self.assertNotIn("get_tests/801", server.calls)
         h = history(report, 100, "App A", "Platform Y")
-        self.assertEqual(h.state, AvailabilityState.NO_RESULT_WITHIN_LOOKBACK)
-        self.assertEqual(h.coverage, Coverage.PARTIAL)
-        self.assertIn("may hold newer results", h.coverage_notes[0])
+        self.assertEqual(h.state, AvailabilityState.NOT_INCLUDED_IN_RUN)
+        self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
+        self.assertEqual(history(report, 555, "App A", "Platform Y").latest_known.run_id, 801)
+        self.assertEqual(history(report, 555, "App A", "Platform X").state, AvailabilityState.NOT_INCLUDED_IN_RUN)
 
     def test_unlimited_lookback_with_complete_scan_is_verified(self):
         _, report = self.build(fx.settings(history={"lookback_limit_days": 0}))

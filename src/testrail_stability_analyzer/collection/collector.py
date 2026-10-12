@@ -6,11 +6,10 @@ Collection order (so that an exhausted request budget loses the least useful dat
 2. Fetch results (``created_after`` = lookback start) and tests for runs that
    can be active in the analysis window: open runs and runs created in it.
 3. Fetch results for all other included runs. Closed runs are not assumed to
-   be immutable, so each one is checked; tests are fetched for those with
-   results inside the window.
-4. For case/application/platform keys still without any result, fetch tests
-   of older runs in that group, newest actual result first, until each key
-   has a result and no remaining run has a result as new as the oldest found.
+   be immutable, so each one is checked.
+4. Fetch tests for every remaining run with results in the lookback, newest
+   actual result first. Results carry no case ID, so this is the only way to
+   find every case executed within the lookback.
 
 Comments are kept on the result models for later analysis but are never
 logged; use :meth:`ResolvedResult.failure_summary` for a sanitized summary.
@@ -108,9 +107,9 @@ class _Session:
         for run in included:
             if run.run_id not in self.results:
                 self._fetch_results(run)
-                if self._has_window_results(run):
-                    self._fetch_tests(run)
-        self._resolve_pending(included)
+        with_results = [run for run in included if run.run_id not in self.tests and self.results.get(run.run_id)]
+        for run in sorted(with_results, key=self._newest_result_order, reverse=True):
+            self._fetch_tests(run)
 
         scans = tuple(self._scan(run) for run in included)
         groups = {run.run_id: group_of(run) for run in included}
@@ -147,45 +146,6 @@ class _Session:
             limitations=self._limitations(discovery, scans, groups),
         )
 
-    def _resolve_pending(self, included: list[DiscoveredRun]) -> None:
-        """Step 4: search older runs for keys that have a test instance but no result yet.
-
-        Only cases already seen in a group are searched for, so a case that never
-        runs on a platform does not force a scan of that platform's history; such
-        keys are reported with partial coverage instead.
-        """
-        pending_by_group: dict[Group, set[int]] = defaultdict(set)
-        found: set[tuple[int, Group]] = set()
-        for outcome in self.outcomes:
-            group = group_of(outcome.source)
-            if group is None:
-                continue
-            pending_by_group[group].add(outcome.case_id)
-            if outcome.final is not None:
-                found.add((outcome.case_id, group))
-
-        runs_by_group: dict[Group, list[DiscoveredRun]] = defaultdict(list)
-        for run in included:
-            group = group_of(run)
-            if group is not None and run.run_id not in self.tests and self.results.get(run.run_id):
-                runs_by_group[group].append(run)
-
-        for group, candidates in runs_by_group.items():
-            pending = {case for case in pending_by_group.get(group, ()) if (case, group) not in found}
-            if not pending:
-                continue
-            candidates.sort(key=self._newest_result_order, reverse=True)
-            best: dict[int, float] = {}
-            for run in candidates:
-                if self.exhausted:
-                    return
-                newest, untimed = self._newest(run.run_id)
-                if not untimed and newest is not None and pending.issubset(best) and newest < min(best.values()):
-                    break  # every remaining run's results are older than every result found
-                for outcome in self._fetch_tests(run):
-                    if outcome.case_id in pending and outcome.final is not None:
-                        best[outcome.case_id] = max(best.get(outcome.case_id, -math.inf), _timestamp(outcome))
-
     # -- API calls ---------------------------------------------------------
 
     def _call[T](self, fetch: Callable[[], T]) -> T | None:
@@ -206,12 +166,12 @@ class _Session:
         self.results[run.run_id] = unique
         self.conflicts.extend(conflicts)
 
-    def _fetch_tests(self, run: DiscoveredRun) -> list[RunOutcome]:
+    def _fetch_tests(self, run: DiscoveredRun) -> None:
         if run.run_id not in self.results or run.run_id in self.tests:
-            return []
+            return
         tests = self._call(lambda: list(self.client.get_tests(run.run_id)))
         if tests is None:
-            return []
+            return
         self.tests[run.run_id] = tests
         by_test: dict[int, list[Result]] = defaultdict(list)
         for result in self.results[run.run_id]:
@@ -235,7 +195,6 @@ class _Session:
                 ResolvedResult(r, None if r.status_id is None else self.resolver.resolve(r.status_id)) for r in results
             )
         self.outcomes.extend(outcomes)
-        return outcomes
 
     # -- applicability -----------------------------------------------------
 
@@ -288,10 +247,6 @@ class _Session:
         created = run.run.created_on
         return not run.run.is_completed or created is None or created >= self.window_start
 
-    def _has_window_results(self, run: DiscoveredRun) -> bool:
-        newest, untimed = self._newest(run.run_id)
-        return untimed or (newest is not None and newest >= self.window_start.timestamp())
-
     def _newest(self, run_id: int) -> tuple[float | None, bool]:
         results = self.results.get(run_id, ())
         stamps = [r.created_on.timestamp() for r in results if r.created_on is not None]
@@ -339,8 +294,3 @@ def _priority(run: DiscoveredRun) -> tuple[bool, float, int]:
     """Open runs first, then newest created first; deterministic by run ID."""
     created = run.run.created_on
     return (bool(run.run.is_completed), -(created.timestamp() if created else math.inf), -run.run_id)
-
-
-def _timestamp(outcome: RunOutcome) -> float:
-    executed = outcome.executed_on
-    return executed.timestamp() if executed is not None else -math.inf

@@ -347,14 +347,11 @@ immutable.
 1. Results (`get_results_for_run` with `created_after = L`) and tests are
    fetched for open runs and runs created within the window.
 2. Results are fetched for every other discovered run, so a late result or
-   triage update in an old (even completed) run is found. Tests are fetched
-   for runs with results inside the window.
-3. For case/application/platform keys that have a test instance but no result
-   yet, tests of older runs in that group are fetched, ordered by their newest
-   result timestamp. Scanning stops once every pending key has a result and
-   the next run's newest result is older than all of them. Keys created only
-   by platform expansion do not trigger this scan; if unscanned runs could hold
-   a result for them, their coverage is `partial`.
+   triage update in an old (even completed) run is found.
+3. Tests are fetched for every remaining run with results in the lookback,
+   newest actual result first. Results carry no case ID, so this is needed to
+   find every case executed within the lookback; if the budget runs out, the
+   runs with the oldest results are the ones left unscanned.
 
 `history.coverage` states how far `latest_known` is backed by the scan:
 
@@ -393,11 +390,14 @@ trigger one bulk `get_cases` request per suite.
 
 - No per-case requests are made (`get_case`, `get_results_for_case`).
 - Requests: discovery (2 `get_runs` + 2 `get_plans` listings plus one
-  `get_plan` per plan), one `get_results_for_run` per run (more when
-  paginated), and one `get_tests` per run that is needed.
+  `get_plan` per plan), one `get_results_for_run` per run, and one
+  `get_tests` per run that is open, created in the window, or has results in
+  the lookback (more when paginated). Runs without results in the lookback
+  cost no `get_tests` request.
 - Because closed runs may still receive results, every discovered run's
-  results are checked; a long lookback over a busy project can need many
-  requests. Increase `http.max_requests_per_execution` or shorten the lookback.
+  results are checked, and every result-bearing run's tests are fetched: a
+  long lookback over a busy project can need about two requests per run.
+  Increase `http.max_requests_per_execution` or shorten the lookback.
 - If the budget runs out, collection stops, keeps what was fully collected,
   sets `report.budget_exhausted`, and marks affected histories `partial`.
 
@@ -492,10 +492,9 @@ tests/integration/   reserved for opt-in live tests
   `lookback_limited` (never `complete`), and the report lists this
   limitation. Set `history.lookback_limit_days = 0` to remove it, at the cost
   of scanning the whole project.
-- Collection covers cases that appear in collected runs; a case executed only
-  in runs whose tests were not fetched (no recent results) has no history.
-- Older outcomes for a key are fetched only when the key has no newer result,
-  so `history.outcomes` does not list every historical execution.
+- A case appears only if it is in a collected run: one that is open, created
+  in the window, or has results in the lookback. A case never executed within
+  the lookback has no history.
 - Results created before the lookback start are not fetched, also for open
   runs created earlier (`RunOutcome.evidence_truncated`).
 - Discovery relies on TestRail's `created_after`/`created_before`/

@@ -14,8 +14,9 @@ project_id = 1
 [history]
 window_days = 60
 max_runs = 10
-# Lookback when searching for the latest known result; 0 disables the limit.
-lookback_limit_days = 365
+# Optional cap (days) on the search for the latest known result. Unset or 0
+# means no limit, so results older than the history window are still found.
+# lookback_limit_days = 365
 
 [http]
 connect_timeout_seconds = 10.0

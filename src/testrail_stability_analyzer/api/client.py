@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import re
 from collections.abc import Iterator, Mapping
 from typing import Any, Final
@@ -204,7 +205,10 @@ def _error_message(response: HttpResponse) -> str:
 
 def _retry_after(response: HttpResponse) -> float | None:
     value = response.headers.get("retry-after")
+    if value is None:
+        return None
     try:
-        return max(float(value), 0.0) if value is not None else None
+        seconds = float(value)
     except ValueError:
         return None
+    return max(seconds, 0.0) if math.isfinite(seconds) else None

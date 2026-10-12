@@ -29,7 +29,7 @@ class RequiredSettingsTests(unittest.TestCase):
         self.assertIsNone(settings.testrail.suite_id)
         self.assertEqual(settings.history.window_days, 60)
         self.assertEqual(settings.history.max_runs, 10)
-        self.assertEqual(settings.history.lookback_limit_days, 365)
+        self.assertIsNone(settings.history.lookback_limit_days)
         self.assertEqual(settings.http.connect_timeout_seconds, 10.0)
         self.assertEqual(settings.http.read_timeout_seconds, 30.0)
         self.assertEqual(settings.http.max_requests_per_execution, 1000)
@@ -99,6 +99,13 @@ class HistoryAndHttpTests(unittest.TestCase):
 
     def test_zero_lookback_disables_limit(self):
         settings = settings_from_mapping(minimal(history={"lookback_limit_days": 0}))
+        self.assertIsNone(settings.history.lookback_limit_days)
+
+    def test_environment_can_set_and_disable_lookback_limit(self):
+        env = {"TESTRAIL_BASE_URL": "https://x.io", "TESTRAIL_PROJECT_ID": "1"}
+        settings = load_settings(environ={**env, "TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS": "400"})
+        self.assertEqual(settings.history.lookback_limit_days, 400)
+        settings = load_settings(environ={**env, "TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS": "0"})
         self.assertIsNone(settings.history.lookback_limit_days)
 
     def test_lookback_shorter_than_window_is_rejected(self):
@@ -237,6 +244,7 @@ class LoadSettingsTests(unittest.TestCase):
         settings = load_settings(EXAMPLE_CONFIG, environ={})
         self.assertEqual(settings.testrail.base_url, "https://example.testrail.io")
         self.assertEqual(settings.history.window_days, 60)
+        self.assertIsNone(settings.history.lookback_limit_days)
 
     def test_environment_only(self):
         settings = load_settings(environ={"TESTRAIL_BASE_URL": "https://env.example", "TESTRAIL_PROJECT_ID": "4"})

@@ -174,9 +174,20 @@ class ErrorHandlingTests(unittest.TestCase):
         error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": "30"}), TestRailRateLimitError)
         self.assertEqual(error.retry_after_seconds, 30.0)
 
+    def test_rate_limit_error_with_malformed_retry_after(self):
+        for value in ("soon", "NaN", "nan", "inf", "-inf", "Infinity", ""):
+            with self.subTest(value=value):
+                response = ok({}, status=429, headers={"retry-after": value})
+                error = self.assert_raises_from(response, TestRailRateLimitError)
+                self.assertIsNone(error.retry_after_seconds)
+
     def test_rate_limit_error_without_retry_after(self):
-        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": "soon"}), TestRailRateLimitError)
+        error = self.assert_raises_from(ok({}, status=429), TestRailRateLimitError)
         self.assertIsNone(error.retry_after_seconds)
+
+    def test_negative_retry_after_clamped_to_zero(self):
+        error = self.assert_raises_from(ok({}, status=429, headers={"retry-after": "-5"}), TestRailRateLimitError)
+        self.assertEqual(error.retry_after_seconds, 0.0)
 
     def test_other_http_errors(self):
         error = self.assert_raises_from(ok({"error": "Field :case_id is not valid"}, status=400), TestRailHTTPError)

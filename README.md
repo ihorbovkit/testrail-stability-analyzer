@@ -84,7 +84,7 @@ settings = load_settings("config/local/config.toml")
 | `testrail.allow_insecure_http` | `false` | — |
 | `history.window_days` | `60` | `TESTRAIL_HISTORY_WINDOW_DAYS` |
 | `history.max_runs` (distinct runs per case/application/platform) | `10` | `TESTRAIL_HISTORY_MAX_RUNS` |
-| `history.lookback_limit_days` (`0` = no limit) | `365` | `TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS` |
+| `history.lookback_limit_days` (optional cap; `0` = no limit) | no limit | `TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS` |
 | `http.connect_timeout_seconds` | `10.0` | `TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS` |
 | `http.read_timeout_seconds` | `30.0` | `TESTRAIL_HTTP_READ_TIMEOUT_SECONDS` |
 | `http.max_requests_per_execution` | `1000` | `TESTRAIL_HTTP_MAX_REQUESTS` |
@@ -102,6 +102,9 @@ settings = load_settings("config/local/config.toml")
 - **Custom statuses are optional.** `mappings.statuses` maps analyzer
   categories (`passed`, `failed`, `blocked`, `not_run`, `retest`,
   `not_applicable`, `automation_issue`) to TestRail status system names or IDs.
+- **The latest known result is always searched for**, even when it is older
+  than the history window. `history.lookback_limit_days` is an optional cap
+  for limiting API usage; results older than the cap will not be found.
 - **Validation reports every problem at once**, with the setting path, e.g.
   `history.window_days must be >= 1`. Unknown keys are rejected to catch typos.
 

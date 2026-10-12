@@ -21,7 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_HISTORY_WINDOW_DAYS: Final = 60
 DEFAULT_MAX_HISTORY_RUNS: Final = 10
-DEFAULT_LOOKBACK_LIMIT_DAYS: Final = 365
+# No limit by default: the latest known result must be found however old it is.
+DEFAULT_LOOKBACK_LIMIT_DAYS: Final[int | None] = None
 DEFAULT_CONNECT_TIMEOUT_SECONDS: Final = 10.0
 DEFAULT_READ_TIMEOUT_SECONDS: Final = 30.0
 DEFAULT_MAX_REQUESTS_PER_EXECUTION: Final = 1000
@@ -88,7 +89,8 @@ class TestRailSettings:
 class HistorySettings:
     window_days: int = DEFAULT_HISTORY_WINDOW_DAYS
     max_runs: int = DEFAULT_MAX_HISTORY_RUNS
-    # None means no lookback limit when searching for the latest known result.
+    # Optional cap on how far back to search for the latest known result; None means
+    # no limit. Results older than a configured cap will not be found.
     lookback_limit_days: int | None = DEFAULT_LOOKBACK_LIMIT_DAYS
 
 

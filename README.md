@@ -776,17 +776,32 @@ with a limitation:
 
 ### Report safety
 
-Only analyzed values are exported. Result comments, case steps and other case
-content, plan/run names, session IDs, URLs, and credentials are never
-written. Every string is stripped of characters XML cannot carry, escaped,
-truncated to Excel's 32,767-character cell limit, and prefixed with `'` when
-it starts with `=`, `+`, `-`, `@`, tab, or carriage return, so spreadsheets do
-not evaluate it as a formula (identically in both formats; defect IDs are
-otherwise kept exactly as entered). XLSX values are stored as text cells,
-never formulas; no hyperlinks, external links, or defect-tracker URLs are
-created. Reports contain customer data such as section
-names and defect IDs: write them outside the repository or to a git-ignored
-directory (`reports/`, `output/`).
+Reports contain only these fields:
+
+- **Case columns:** Test Case ID, Feature / Test Group (section names), Class
+  Name (the raw value of the configured custom field), Test Type, and Defects
+  (defect IDs as entered in results).
+- **Combination columns:** analyzed values only (latest status and date,
+  execution count, rates, diagnosis, confidence, coverage).
+- **Report Info:** project, suite, selected plan and run IDs, collection
+  settings and counts, limitations, and the legend.
+
+Result comments, case steps and other case content, plan and run names,
+session IDs, the TestRail base URL, and credentials are never written.
+
+Text fields copied from TestRail (section names, Class Name, defect IDs) are
+exported as entered: if they contain URL text, that text appears in the
+report as plain text. The exporter never creates hyperlinks, external links,
+or links to TestRail or defect trackers; XLSX values are stored as text
+cells, never formulas.
+
+Every string is stripped of characters XML cannot carry, escaped, truncated
+to Excel's 32,767-character cell limit, and prefixed with `'` when it starts
+with `=`, `+`, `-`, `@`, tab, or carriage return, so spreadsheets do not
+evaluate it as a formula (identically in both formats; defect IDs are
+otherwise kept exactly as entered). Reports contain customer data such as
+section names and defect IDs: write them outside the repository or to a
+git-ignored directory (`reports/`, `output/`).
 
 ## Command-line interface
 

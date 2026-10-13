@@ -21,6 +21,8 @@ from urllib.parse import urlsplit, urlunsplit
 
 DEFAULT_HISTORY_WINDOW_DAYS: Final = 60
 DEFAULT_MAX_HISTORY_RUNS: Final = 10
+# Conclusive executions below which analysis confidence is low and "stable" is not assigned.
+DEFAULT_MIN_EXECUTIONS: Final = 5
 # Extended lookback for the latest known result; 0 in configuration means no limit.
 DEFAULT_LOOKBACK_LIMIT_DAYS: Final[int | None] = 365
 DEFAULT_CONNECT_TIMEOUT_SECONDS: Final = 10.0
@@ -40,6 +42,7 @@ ENVIRONMENT_VARIABLES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
         "TESTRAIL_HISTORY_WINDOW_DAYS": ("history", "window_days"),
         "TESTRAIL_HISTORY_MAX_RUNS": ("history", "max_runs"),
         "TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS": ("history", "lookback_limit_days"),
+        "TESTRAIL_ANALYSIS_MIN_EXECUTIONS": ("analysis", "min_executions"),
         "TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS": ("http", "connect_timeout_seconds"),
         "TESTRAIL_HTTP_READ_TIMEOUT_SECONDS": ("http", "read_timeout_seconds"),
         "TESTRAIL_HTTP_MAX_REQUESTS": ("http", "max_requests_per_execution"),
@@ -105,6 +108,13 @@ class HistorySettings:
     # Extended lookback (days) for the latest known result; None means no limit.
     # Results older than a configured limit will not be found.
     lookback_limit_days: int | None = DEFAULT_LOOKBACK_LIMIT_DAYS
+
+
+@dataclass(frozen=True, slots=True)
+class AnalysisSettings:
+    # Conclusive executions (passed, failed, automation issue) needed for medium
+    # confidence and for a "stable" diagnosis. Must not exceed history.max_runs.
+    min_executions: int = DEFAULT_MIN_EXECUTIONS
 
 
 @dataclass(frozen=True, slots=True)
@@ -203,6 +213,7 @@ class Settings:
     filters: FilterSettings = FilterSettings()
     collection: CollectionSettings = CollectionSettings()
     credential_provider: CredentialProviderSettings = CredentialProviderSettings()
+    analysis: AnalysisSettings = AnalysisSettings()
 
 
 def load_settings(
@@ -267,7 +278,17 @@ class _Parser:
         self._check_keys(
             data,
             "",
-            {"testrail", "history", "http", "naming", "mappings", "filters", "collection", "credential_provider"},
+            {
+                "testrail",
+                "history",
+                "http",
+                "naming",
+                "mappings",
+                "filters",
+                "collection",
+                "credential_provider",
+                "analysis",
+            },
         )
 
         testrail = self._section(data, "testrail", {"base_url", "project_id", "suite_id", "allow_insecure_http"})
@@ -285,6 +306,14 @@ class _Parser:
         lookback = lookback or None  # 0 disables the limit.
         if lookback is not None and window_days is not None and lookback < window_days:
             self.errors.append("history.lookback_limit_days must be 0 (no limit) or >= history.window_days")
+
+        analysis = self._section(data, "analysis", {"min_executions"})
+        min_executions = self._integer(analysis, "min_executions", "analysis", default=None, minimum=1)
+        if min_executions is None:
+            # Unset: the default, but never above a smaller history.max_runs.
+            min_executions = min(DEFAULT_MIN_EXECUTIONS, max_runs or DEFAULT_MAX_HISTORY_RUNS)
+        elif max_runs is not None and min_executions > max_runs:
+            self.errors.append("analysis.min_executions must be <= history.max_runs")
 
         http = self._section(
             data,
@@ -357,6 +386,7 @@ class _Parser:
             filters=FilterSettings(**filter_values),
             collection=collection,
             credential_provider=credential_provider,
+            analysis=AnalysisSettings(min_executions),
         )
 
     # -- collection and credential provider ---------------------------------

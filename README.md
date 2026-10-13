@@ -88,6 +88,7 @@ settings = load_settings("config/local/config.toml")
 | `history.window_days` | `60` | `TESTRAIL_HISTORY_WINDOW_DAYS` |
 | `history.max_runs` (distinct runs per case/application/platform) | `10` | `TESTRAIL_HISTORY_MAX_RUNS` |
 | `history.lookback_limit_days` (extended lookback for the latest known result; `0` = no limit) | `365` | `TESTRAIL_HISTORY_LOOKBACK_LIMIT_DAYS` |
+| `analysis.min_executions` (conclusive executions for medium confidence and `stable`; ≤ `max_runs`) | `5` | `TESTRAIL_ANALYSIS_MIN_EXECUTIONS` |
 | `http.connect_timeout_seconds` | `10.0` | `TESTRAIL_HTTP_CONNECT_TIMEOUT_SECONDS` |
 | `http.read_timeout_seconds` | `30.0` | `TESTRAIL_HTTP_READ_TIMEOUT_SECONDS` |
 | `http.max_requests_per_execution` (includes retries) | `1000` | `TESTRAIL_HTTP_MAX_REQUESTS` |
@@ -384,7 +385,9 @@ sorted by the actual final-result timestamp, newest first.
 - `history.window_complete` is false when runs that may hold results inside
   the window were not scanned (request budget, incomplete discovery), so the
   window can miss executions even when `latest_known` is fully backed. A note
-  is added to `coverage_notes`.
+  is added to `coverage_notes`. `history.window_interrupted` is true when
+  this is caused by interrupted collection rather than only by a targeted
+  selection.
 - Exact duplicate result records (e.g. across pages) are merged; records with
   the same ID but different content are listed in `report.conflicts`.
 
@@ -507,6 +510,129 @@ execution, a validation aid that is separate from `history.window_days`,
   `results_incomplete` when no status was retrieved). `report.results_capped`
   is set and `report.is_partial` is true.
 
+## Stability analysis
+
+`analyze(report, settings)` turns a `CollectionReport` into an
+`AnalysisReport`. It is a pure function of collected data and makes no
+TestRail requests.
+
+```python
+from testrail_stability_analyzer.analysis import analyze
+
+analysis = analyze(report, settings)
+for item in analysis.analyses:  # one per case / application / platform
+    print(item.key.case_id, item.diagnosis, item.confidence, item.metrics.pass_rate.value)
+```
+
+Each `KeyAnalysis` keeps objective **metrics** separate from the diagnostic
+**interpretation** (`diagnosis`, `confidence`, `reasons`), and links back to
+the collected `history` (source plan, run, test, and result IDs).
+
+### Result records versus distinct runs
+
+A test can have several result records in one run (automated retries, manual
+triage, comment-only updates). They are one execution: the run's final
+status-bearing record is its outcome. Stability metrics count **distinct
+runs** in `history.window` (final result within `history.window_days`, at most
+`history.max_runs`). Result records only feed the retry/triage metrics and the
+defect aggregation.
+
+### Metrics and denominators
+
+| Metric | Definition |
+|---|---|
+| `executions` | distinct runs in the window (after the cap); `window_total` is before the cap |
+| `passed`, `failed`, `blocked`, `automation_issue`, `not_applicable`, `retest`, `not_run`, `unknown` | final category of each execution |
+| `evidence_count` | conclusive executions: `passed + failed + automation_issue` |
+| `pass_rate` | `passed / evidence_count` |
+| `failure_rate` | `failed / evidence_count` |
+| `automation_issue_rate` | `automation_issue / evidence_count`, tracked separately from failures |
+| `retry_triage_count` / `retry_triage_rate` | executions with more than one result record / `executions` |
+| `status_changed_within_run` | executions whose first status-bearing record differs in category from the final one |
+| `transitions` | changes of final category between consecutive executions, oldest to newest |
+| `latest_*` | latest known result, which may be older than the window |
+
+Blocked, retest, not run, not applicable, and unknown executions are counted
+but excluded from the rates. Rates are exact `Rate(numerator, denominator)`
+values; `value` is `None` when the denominator is zero.
+
+### Diagnosis
+
+Rules are applied in order; the first match wins (P = passed, F = failed,
+A = automation issue, E = P + F + A, n = `analysis.min_executions`):
+
+| # | Diagnosis | Rule |
+|---|---|---|
+| 1 | `not_applicable` | final status or applicability metadata says not applicable |
+| 2 | `partial` | coverage is `partial`, results are incomplete, or the window was interrupted (budget, cap, unscanned runs) |
+| 3 | `unresolved_applicability` | not executed, and applicability metadata is missing |
+| 4 | `not_run_in_window` | no execution in the window, but an earlier one is known |
+| 4 | `not_run` | no execution is known |
+| 5 | `insufficient_history` | E = 0 (only blocked, retest, not run, or unknown) |
+| 6 | `stable` | P = E, E ≥ n, and no unknown status in the window; otherwise `insufficient_history` |
+| 7 | `inconsistent` | P > 0 and F > 0 |
+| 8 | `automation_issue_evidence` | A > 0 and F = 0 |
+| 9 | `application_failure_evidence` | P = 0, F > 0, A = 0 |
+| 9 | `mixed_failure_evidence` | P = 0, F > 0, A > 0 |
+
+- **Labels describe evidence, not causes.** Mixed results do not prove a test
+  is flaky; consistent failures are never called inconsistent.
+  `application_failure_evidence` means executions ended as failed, not that an
+  application defect is confirmed.
+- **Linked defects do not affect the diagnosis.** A defect reference records
+  that someone linked a ticket to a result; the ticket may describe a test,
+  environment, or data problem, may be a duplicate, or may be rejected. The
+  analyzer does not read the tracker, so it cannot establish an application
+  failure from it.
+- **A single passing execution never establishes stability**: `stable`
+  needs at least `analysis.min_executions` (default 5) conclusive executions.
+
+### Confidence
+
+| Level | Rule |
+|---|---|
+| `none` | no conclusive execution |
+| `low` | fewer than `min_executions` conclusive executions, partial coverage, an interrupted window, or an unidentified application/platform |
+| `medium` | at least `min_executions`, but fewer than `history.max_runs`, conclusive executions; or `max_runs` with a window that may be incomplete (e.g. `selection_limited`) |
+| `high` | `history.max_runs` conclusive executions, `complete` or `lookback_limited` coverage, and a complete window |
+
+### Coverage limitations
+
+Each analysis carries the history's `coverage` and `coverage_notes`;
+`AnalysisReport.limitations` adds collection limitations. Targeted collection
+(selected plans or runs) is `selection_limited`: it is not project-wide
+historical coverage, so it can never reach `high` confidence, and a single
+selected plan normally yields `insufficient_history`. Partial collection,
+selection limits, insufficient evidence, and not-applicable cases are always
+reported as distinct values.
+
+### Case-level defect aggregation
+
+`AnalysisReport.case_defects` lists, per **Test Case ID**, every defect
+referenced by its result records within the reporting period (the history
+window), across all applications and platforms. The same `CaseDefects`
+object is attached to every analysis of the case.
+
+- Every collected record counts: final results, automated retries, manual
+  triage, and comment-only records. The `max_runs` cap does not apply.
+- Each record is placed by its **own** timestamp. Records without one are
+  excluded and counted (`undated_records_with_defects`).
+- The `defects` field is split on commas, trimmed, and deduplicated
+  case-sensitively. Identifiers are kept exactly as entered; no tracker URLs
+  are derived.
+- Each `DefectReference` lists its sources: result, test, run, and plan IDs,
+  timestamp, status category, whether it is the run's final record,
+  application, platform, and version. Comments are not included.
+- Case and test `refs` fields are not execution defects and are ignored.
+- `coverage` (`complete`, `selection_limited`, `partial`) is report-wide,
+  since an unscanned run may hold records of any case. An empty list with
+  `complete` coverage means no defect was linked; with `partial` it means
+  none was found in incomplete data. `records_examined` shows how many
+  records were checked.
+- Records of tests no longer in their run (orphans) have no known case; their
+  count is reported in `orphan_records_with_defects` and the limitations,
+  without downgrading every case.
+
 ## Command-line interface
 
 ```bash
@@ -600,7 +726,8 @@ src/testrail_stability_analyzer/
 ├── models/      metadata.py, execution.py (typed entities), statuses.py (status resolution)
 ├── collection/  discovery.py, classification.py, outcomes.py, history.py,
 │                collector.py, sanitize.py (historical execution collection)
-├── analysis/    planned: stability and flakiness metrics
+├── analysis/    metrics.py, classification.py, defects.py, analyzer.py
+│                (stability analysis and case-level defect aggregation)
 └── export/      planned: XML / JSON / Excel reports
 config/config.example.toml
 tests/unit/          mocked unit tests
@@ -639,11 +766,15 @@ tests/integration/   reserved for opt-in live tests
 - macOS Keychain credential provider and provider selection in configuration.
 - Command-line interface (`collect plan`, `collect run`, `collect sample`)
   with a sanitized summary and exit codes.
+- Stability analysis per case/application/platform: distinct-run metrics,
+  documented pass-rate denominator, retry/triage and transition metrics,
+  deterministic diagnosis and confidence, and coverage limitations.
+- Case-level defect aggregation across applications, platforms, retries,
+  and triage records, with provenance.
 
 ### Not implemented yet
 
-- Stability, flakiness, and automation-issue metrics.
-- XML, JSON, and Excel export.
+- XML, JSON, and Excel export, and analysis output in the CLI.
 - Live integration tests.
 - Credential providers other than environment variables and macOS Keychain.
 
@@ -678,6 +809,11 @@ tests/integration/   reserved for opt-in live tests
   the lookback has no history.
 - Results created before the lookback start are not fetched, also for open
   runs created earlier (`RunOutcome.evidence_truncated`).
+- Window membership of an execution uses its **final** result's timestamp,
+  while defect aggregation uses each record's own timestamp; for a run whose
+  records straddle the window start, the two can differ.
+- Defect coverage is report-wide: one unscanned run marks every case's defect
+  list `partial`.
 - Discovery relies on TestRail's `created_after`/`created_before`/
   `is_completed` filters; their boundary-second semantics are handled by
   overlapping queries.

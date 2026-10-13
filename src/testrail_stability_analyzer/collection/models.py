@@ -248,6 +248,10 @@ class ExecutionHistory:
     # False when runs that may hold results inside the window were not scanned, so
     # ``window``/``window_total`` can miss executions even if ``latest_known`` is backed.
     window_complete: bool = True
+    # True when the window is incomplete because collection was interrupted (request
+    # budget, result-record cap, incomplete discovery, unscanned runs), as opposed to
+    # only the expected limit of targeted collection.
+    window_interrupted: bool = False
 
     @property
     def is_verified_latest(self) -> bool:

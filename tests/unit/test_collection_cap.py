@@ -208,6 +208,7 @@ class PartialFinalOutcomeTests(unittest.TestCase):
         self.assertEqual(history.key.run_id, 501)
         self.assertEqual(history.window_total, 0)  # only the comment-only record was retrieved
         self.assertFalse(history.window_complete)
+        self.assertTrue(history.window_interrupted)
         self.assertIn("history window may be incomplete: the run's result records were capped", history.coverage_notes)
         self.assertIs(history.coverage, Coverage.PARTIAL)
 

@@ -10,6 +10,7 @@ from .auth import (
 )
 from .settings import (
     ENVIRONMENT_VARIABLES,
+    AnalysisSettings,
     CollectionSettings,
     ConfigurationError,
     CredentialProviderSettings,
@@ -29,6 +30,7 @@ from .settings import (
 
 __all__ = [
     "ENVIRONMENT_VARIABLES",
+    "AnalysisSettings",
     "CollectionSettings",
     "ConfigurationError",
     "CredentialError",

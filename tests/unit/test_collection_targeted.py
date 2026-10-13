@@ -277,6 +277,7 @@ class SelectionCoverageTests(unittest.TestCase):
         self.assertTrue(identified)
         for history in identified:
             self.assertFalse(history.window_complete)
+            self.assertFalse(history.window_interrupted)  # the expected limit of a selection
             note = "history window may be incomplete: only the selected runs were scanned"
             self.assertIn(note, history.coverage_notes)
 

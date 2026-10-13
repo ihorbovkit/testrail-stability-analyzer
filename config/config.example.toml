@@ -18,6 +18,12 @@ max_runs = 10
 # than the history window. 0 means no limit (scans the whole project history).
 lookback_limit_days = 365
 
+[analysis]
+# Conclusive executions (passed, failed, automation issue) needed for medium
+# confidence and for a "stable" diagnosis. Must be <= history.max_runs; when
+# unset, 5 (or history.max_runs, if smaller).
+min_executions = 5
+
 [http]
 connect_timeout_seconds = 10.0
 read_timeout_seconds = 30.0

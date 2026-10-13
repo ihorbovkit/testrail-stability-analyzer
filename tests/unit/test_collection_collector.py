@@ -236,6 +236,7 @@ class LatestKnownTests(unittest.TestCase):
         # The latest result is still backed: the unscanned run only holds older results.
         self.assertEqual(h.coverage, Coverage.LOOKBACK_LIMITED)
         self.assertFalse(h.window_complete)
+        self.assertTrue(h.window_interrupted)
         self.assertEqual(h.window_total, 1)
         self.assertTrue(any("history window may be incomplete" in note for note in h.coverage_notes))
 

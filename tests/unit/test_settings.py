@@ -117,6 +117,27 @@ class HistoryAndHttpTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             settings_from_mapping(minimal(history={"window_days": 60, "lookback_limit_days": 30}))
 
+    def test_analysis_min_executions(self):
+        self.assertEqual(settings_from_mapping(minimal()).analysis.min_executions, 5)
+        settings = settings_from_mapping(minimal(analysis={"min_executions": 3}))
+        self.assertEqual(settings.analysis.min_executions, 3)
+        # Unset: the default is lowered to a smaller max_runs instead of failing.
+        settings = settings_from_mapping(minimal(history={"max_runs": 3}))
+        self.assertEqual(settings.analysis.min_executions, 3)
+        env = {"TESTRAIL_BASE_URL": "https://x.io", "TESTRAIL_PROJECT_ID": "1", "TESTRAIL_ANALYSIS_MIN_EXECUTIONS": "7"}
+        self.assertEqual(load_settings(environ=env).analysis.min_executions, 7)
+
+    def test_invalid_analysis_values(self):
+        for sections in (
+            {"analysis": {"min_executions": 0}},
+            {"analysis": {"min_executions": "five"}},
+            {"analysis": {"min_executions": 11}},
+            {"analysis": {"min_executions": 4}, "history": {"max_runs": 3}},
+            {"analysis": {"unknown": 1}},
+        ):
+            with self.subTest(sections=sections), self.assertRaises(ConfigurationError):
+                settings_from_mapping(minimal(**sections))
+
     def test_invalid_history_and_http_values(self):
         cases = [
             {"history": {"window_days": 0}},

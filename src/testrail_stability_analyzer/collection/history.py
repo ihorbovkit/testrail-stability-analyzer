@@ -93,7 +93,7 @@ def build_histories(
         if capped:
             key_notes.append(f"result records of {capped} run(s) were cut by the result-record cap")
         coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited, selection_limited)
-        window_complete, window_notes = _window_completeness(
+        window_complete, window_interrupted, window_notes = _window_completeness(
             group, ordered, gaps, window_start, discovery_complete, selection_limited
         )
         histories.append(
@@ -108,6 +108,7 @@ def build_histories(
                 coverage=coverage,
                 coverage_notes=notes + window_notes,
                 window_complete=window_complete,
+                window_interrupted=window_interrupted,
             )
         )
     return tuple(histories)
@@ -194,26 +195,28 @@ def _window_completeness(
     window_start: datetime,
     discovery_complete: bool,
     selection_limited: bool = False,
-) -> tuple[bool, tuple[str, ...]]:
+) -> tuple[bool, bool, tuple[str, ...]]:
+    """(complete, interrupted, notes). ``interrupted`` excludes the expected limit of a targeted selection."""
     if group is None:
         # Unidentified keys consist of one run: complete unless its result stream was capped,
         # in which case its execution in the window may lie in records that were not retrieved.
         if any(not outcome.results_complete for outcome in outcomes):
-            return False, ("history window may be incomplete: the run's result records were capped",)
-        return True, ()
+            return False, True, ("history window may be incomplete: the run's result records were capped",)
+        return True, False, ()
     notes = [] if discovery_complete else ["history window may be incomplete: run discovery was incomplete"]
-    if selection_limited:
-        # Unselected runs of the same application/platform may hold executions in the window.
-        notes.append("history window may be incomplete: only the selected runs were scanned")
-    unscanned = [scan.run_id for scan in gaps.get(group, ()) if _may_hold_window_results(scan, window_start)]
+    unscanned = [scan.run_id for scan in gaps.get(group, ()) if may_hold_window_results(scan, window_start)]
     if unscanned:
         notes.append(
             f"history window may be incomplete: {len(unscanned)} run(s) with possible results in it were not scanned"
         )
-    return not notes, tuple(notes)
+    interrupted = bool(notes)
+    if selection_limited:
+        # Unselected runs of the same application/platform may hold executions in the window.
+        notes.append("history window may be incomplete: only the selected runs were scanned")
+    return not notes, interrupted, tuple(notes)
 
 
-def _may_hold_window_results(scan: RunScan, window_start: datetime) -> bool:
+def may_hold_window_results(scan: RunScan, window_start: datetime) -> bool:
     if not scan.results_fetched or scan.results_capped or scan.active_in_window or scan.has_untimed_results:
         return True
     return scan.newest_result_on is not None and scan.newest_result_on >= window_start

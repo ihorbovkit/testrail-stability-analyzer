@@ -44,7 +44,7 @@ class Diagnosis(StrEnum):
 
 
 class Confidence(StrEnum):
-    NONE = "none"  # no conclusive execution
+    NONE = "none"  # no conclusive execution, or a diagnosis that does not rest on execution evidence
     LOW = "low"
     MEDIUM = "medium"
     HIGH = "high"
@@ -105,7 +105,9 @@ class StabilityMetrics:
     automation_issue_rate: Rate  # automation_issue / evidence_count
     retry_triage_count: int  # executions with more than one result record
     retry_triage_rate: Rate  # retry_triage_count / executions
-    status_changed_within_run: int  # first status-bearing category differs from the final one
+    # Executions with a category change between consecutive status-bearing records
+    # (e.g. failed -> passed, or failed -> passed -> failed); comment-only records are ignored.
+    status_changed_within_run: int
     transitions: tuple[StatusTransition, ...]
 
     @property
@@ -114,9 +116,11 @@ class StabilityMetrics:
 
 
 class DefectCoverage(StrEnum):
-    COMPLETE = "complete"  # every run that may hold results in the period was scanned
-    SELECTION_LIMITED = "selection_limited"  # only the selected plans/runs were scanned
-    PARTIAL = "partial"  # collection was interrupted; defects may be missing
+    COMPLETE = "complete"  # every discovered run that may hold results in the period was scanned
+    # Everything in scope was scanned, but the scope excludes runs (targeted selection, naming patterns, filters).
+    SELECTION_LIMITED = "selection_limited"
+    # Runs within the scope may be missing (interrupted collection, unscanned or unclassified runs).
+    PARTIAL = "partial"
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +136,7 @@ class DefectSource:
     is_final_result: bool  # the record is the run's final outcome (not a retry or triage record)
     application: DimensionValue
     platform: DimensionValue
-    application_version: str | None
+    application_version: str | None  # recorded on this result itself; not inherited from the final result
 
 
 @dataclass(frozen=True, slots=True)

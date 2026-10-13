@@ -88,7 +88,13 @@ def _application_version(
     """The version on the final result, else the most recent record that has one."""
     candidates = ([final] if final is not None else []) + list(reversed(ordered))
     for resolved in candidates:
-        value = field_value(resolved.result, version_field or "version")
-        if value not in (None, ""):
-            return str(value)
+        value = result_version(resolved.result, version_field)
+        if value is not None:
+            return value
     return None
+
+
+def result_version(result: Result, version_field: str | None = None) -> str | None:
+    """The application version recorded on this result itself (``version_field``, else ``version``)."""
+    value = field_value(result, version_field or "version")
+    return None if value in (None, "") else str(value)

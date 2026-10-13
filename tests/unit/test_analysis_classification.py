@@ -125,7 +125,7 @@ class CoverageTests(unittest.TestCase):
     def test_partial_coverage_overrides_evidence(self):
         h = history(runs([PASSED] * 10), global_notes=("run discovery was incomplete",))
         self.assertEqual(h.coverage, Coverage.PARTIAL)
-        self.assertEqual(classify(h)[:2], (Diagnosis.PARTIAL, Confidence.LOW))
+        self.assertEqual(classify(h)[:2], (Diagnosis.PARTIAL, Confidence.NONE))
 
     def test_capped_results_are_partial(self):
         h = history([outcome(500, 100, rec(1, PASSED, 1), complete=False)])
@@ -140,7 +140,7 @@ class CoverageTests(unittest.TestCase):
         h = history(outcomes, gaps={(outcomes[0].source.classification.application, PLAT_X): [gap]})
         self.assertNotEqual(h.coverage, Coverage.PARTIAL)
         self.assertTrue(h.window_interrupted)
-        self.assertEqual(classify(h)[:2], (Diagnosis.PARTIAL, Confidence.LOW))
+        self.assertEqual(classify(h)[:2], (Diagnosis.PARTIAL, Confidence.NONE))
 
     def test_selection_limited_cannot_exceed_medium(self):
         h = history(runs([PASSED] * 10), selection_limited=True)
@@ -159,6 +159,64 @@ class CoverageTests(unittest.TestCase):
         h = history([outcome(500, 100, rec(1, FAILED, 1), platform=UNRESOLVED)], platform=UNRESOLVED, platforms=())
         self.assertFalse(h.key.is_identified)
         self.assertEqual(classify(h, min_executions=1)[:2], (Diagnosis.APPLICATION_FAILURE_EVIDENCE, Confidence.LOW))
+
+
+
+class NonEvidenceConfidenceTests(unittest.TestCase):
+    """Diagnoses that do not rest on execution evidence have no confidence; metrics stay unchanged."""
+
+    def assert_none(self, h, expected):
+        metrics = compute_metrics(h)
+        diagnosis, confidence, reasons = classify(h)
+        self.assertEqual((diagnosis, confidence), (expected, Confidence.NONE))
+        self.assertFalse(any(reason.startswith("confidence is") for reason in reasons))
+        return metrics
+
+    def test_partial_with_ten_passes(self):
+        h = history(runs([PASSED] * 10), global_notes=("run discovery was incomplete",))
+        m = self.assert_none(h, Diagnosis.PARTIAL)
+        self.assertEqual((m.executions, m.evidence_count, m.pass_rate.value), (10, 10, 1.0))
+
+    def test_not_applicable_latest_after_conclusive_executions(self):
+        h = history(runs([NOT_APPLICABLE] + [PASSED] * 9))
+        m = self.assert_none(h, Diagnosis.NOT_APPLICABLE)
+        self.assertEqual((m.not_applicable, m.passed), (1, 9))
+
+    def test_not_run_in_window(self):
+        self.assert_none(history([outcome(500, 100, rec(1, PASSED, 90))]), Diagnosis.NOT_RUN_IN_WINDOW)
+
+    def test_not_run(self):
+        self.assert_none(history([outcome(500, 100)]), Diagnosis.NOT_RUN)
+
+    def test_unresolved_applicability(self):
+        h = history(runs([PASSED]), platform=PLAT_Y, platforms=(PLAT_X, PLAT_Y), applicability=Applicability.UNKNOWN)
+        self.assert_none(h, Diagnosis.UNRESOLVED_APPLICABILITY)
+
+    def test_evidence_diagnoses_keep_their_confidence(self):
+        self.assertEqual(classify(history(runs([PASSED])))[1], Confidence.LOW)
+        self.assertEqual(classify(history(runs([FAILED] * 5)))[1], Confidence.MEDIUM)
+        self.assertEqual(classify(history(runs([BLOCKED])))[:2], (Diagnosis.INSUFFICIENT_HISTORY, Confidence.NONE))
+
+
+class SelectionLimitedWordingTests(unittest.TestCase):
+    def test_not_run_names_the_selection(self):
+        h = history(runs([PASSED]), platform=PLAT_Y, platforms=(PLAT_X, PLAT_Y), selection_limited=True)
+        self.assertEqual(h.coverage, Coverage.SELECTION_LIMITED)
+        diagnosis, _, reasons = classify(h)
+        self.assertEqual(diagnosis, Diagnosis.NOT_RUN)
+        self.assertEqual(
+            reasons, ("no execution is known in the selected runs; runs outside the selection were not scanned",)
+        )
+
+    def test_not_run_in_window_names_the_selection(self):
+        h = history([outcome(500, 100, rec(1, PASSED, 90))], selection_limited=True)
+        diagnosis, _, reasons = classify(h)
+        self.assertEqual(diagnosis, Diagnosis.NOT_RUN_IN_WINDOW)
+        self.assertIn("in the selected runs", reasons[0])
+
+    def test_project_wide_wording_is_unchanged(self):
+        h = history(runs([PASSED]), platform=PLAT_Y, platforms=(PLAT_X, PLAT_Y))
+        self.assertEqual(classify(h)[2], ("no execution is known",))
 
 
 if __name__ == "__main__":

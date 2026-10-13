@@ -16,7 +16,11 @@ from .models import AnalysisReport, KeyAnalysis
 def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
     min_executions = settings.analysis.min_executions
     max_runs = settings.history.max_runs
-    case_defects = aggregate_defects(report, (history.key.case_id for history in report.histories))
+    case_defects = aggregate_defects(
+        report,
+        (history.key.case_id for history in report.histories),
+        version_field=settings.mappings.custom_fields.get("application_version"),
+    )
     defects_by_case = {defects.case_id: defects for defects in case_defects}
     analyses = []
     for history in report.histories:
@@ -27,9 +31,7 @@ def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
 
     coverage, _ = defect_coverage(report)
     orphans = orphan_records_with_defects(report)
-    limitations = list(report.limitations)
-    if report.discovery.targeted:
-        limitations.append("targeted collection: the selected plans and runs are not project-wide historical coverage")
+    limitations = list(report.limitations)  # includes the targeted-collection note of discovery
     if orphans:
         limitations.append(
             f"{orphans} defect-bearing result record(s) in the period belong to tests no longer in their run "
@@ -47,5 +49,5 @@ def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
         case_defects=case_defects,
         defect_coverage=coverage,
         orphan_records_with_defects=orphans,
-        limitations=tuple(limitations),
+        limitations=tuple(dict.fromkeys(limitations)),
     )

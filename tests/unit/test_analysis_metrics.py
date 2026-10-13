@@ -30,6 +30,12 @@ class DistinctRunTests(unittest.TestCase):
         self.assertEqual(m.retry_triage_count, 0)
         self.assertEqual(m.retry_triage_rate, Rate(0, 10))
 
+    def test_window_is_newest_runs_including_inconclusive(self):
+        # Newest first: 3 blocked, then 9 passed. The 10 newest runs include the blocked ones.
+        m = compute_metrics(history(runs([BLOCKED] * 3 + [PASSED] * 9)))
+        self.assertEqual((m.executions, m.window_total, m.blocked, m.passed), (10, 12, 3, 7))
+        self.assertEqual(m.pass_rate, Rate(7, 7))
+
     def test_max_runs_is_configurable(self):
         m = compute_metrics(history(runs([PASSED] * 8), max_runs=3))
         self.assertEqual((m.executions, m.window_total), (3, 8))
@@ -93,6 +99,31 @@ class LatestAndTransitionTests(unittest.TestCase):
         m = compute_metrics(history([capped]))
         self.assertEqual(m.unverified_finals, 1)
         self.assertFalse(m.latest_is_verified_final)
+
+
+class StatusChangedWithinRunTests(unittest.TestCase):
+    def changed(self, *records):
+        return compute_metrics(history([outcome(500, 100, *records)])).status_changed_within_run
+
+    def test_failed_passed_failed_is_a_change(self):
+        # First and final categories are equal, but the run changed in between.
+        self.assertEqual(self.changed(rec(1, FAILED, 3), rec(2, PASSED, 2.9), rec(3, FAILED, 2.8)), 1)
+
+    def test_any_category_transition_counts(self):
+        self.assertEqual(self.changed(rec(1, BLOCKED, 3), rec(2, AUTOMATION_ISSUE, 2.9)), 1)
+
+    def test_repeated_category_is_not_a_change(self):
+        self.assertEqual(self.changed(rec(1, FAILED, 3), rec(2, FAILED, 2.9)), 0)
+
+    def test_comment_only_records_are_ignored(self):
+        self.assertEqual(self.changed(rec(1, FAILED, 3), rec(2, None, 2.9), rec(3, FAILED, 2.8)), 0)
+        self.assertEqual(self.changed(rec(1, None, 3), rec(2, PASSED, 2.9), rec(3, None, 2.8)), 0)
+        self.assertEqual(self.changed(rec(1, FAILED, 3), rec(2, None, 2.9), rec(3, PASSED, 2.8)), 1)
+
+    def test_counted_once_per_execution(self):
+        records = (rec(1, FAILED, 3), rec(2, PASSED, 2.9), rec(3, FAILED, 2.8), rec(4, PASSED, 2.7))
+        m = compute_metrics(history([outcome(500, 100, *records), outcome(501, 100, rec(5, PASSED, 1))]))
+        self.assertEqual((m.status_changed_within_run, m.executions), (1, 2))
 
 
 if __name__ == "__main__":

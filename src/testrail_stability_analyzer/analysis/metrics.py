@@ -50,9 +50,12 @@ def compute_metrics(history: ExecutionHistory) -> StabilityMetrics:
 
 
 def _changed_within_run(outcome: RunOutcome) -> bool:
-    """True when the first status-bearing record's category differs from the final one (e.g. failed, then passed)."""
-    first = next((r.status for r in outcome.results if r.status is not None), None)
-    return first is not None and outcome.category is not None and first.category is not outcome.category
+    """True when consecutive status-bearing records differ in category (e.g. failed -> passed -> failed).
+
+    Comment-only records carry no status and are skipped.
+    """
+    categories = [r.status.category for r in outcome.results if r.status is not None]
+    return any(previous is not current for previous, current in zip(categories, categories[1:]))
 
 
 def _transitions(window: tuple[RunOutcome, ...]) -> tuple[StatusTransition, ...]:

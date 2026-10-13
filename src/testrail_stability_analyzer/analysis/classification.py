@@ -14,6 +14,10 @@ A = automation issue, E = P + F + A, n = ``analysis.min_executions``):
 9. P = 0: ``application_failure_evidence`` (A = 0) or ``mixed_failure_evidence`` (A > 0).
 
 Linked defects never influence the diagnosis.
+
+Diagnoses 1-4 do not rest on execution evidence, so their confidence is
+``none`` even when the window holds conclusive executions; the metrics are
+reported unchanged.
 """
 
 from __future__ import annotations
@@ -21,11 +25,23 @@ from __future__ import annotations
 from ..collection.models import AvailabilityState, Coverage, ExecutionHistory
 from .models import Confidence, Diagnosis, StabilityMetrics
 
+NON_EVIDENCE_DIAGNOSES = frozenset(
+    {
+        Diagnosis.NOT_APPLICABLE,
+        Diagnosis.NOT_RUN,
+        Diagnosis.NOT_RUN_IN_WINDOW,
+        Diagnosis.UNRESOLVED_APPLICABILITY,
+        Diagnosis.PARTIAL,
+    }
+)
+
 
 def diagnose(
     history: ExecutionHistory, metrics: StabilityMetrics, *, min_executions: int, max_runs: int
 ) -> tuple[Diagnosis, Confidence, tuple[str, ...]]:
     diagnosis, reasons = _diagnosis(history, metrics, min_executions)
+    if diagnosis in NON_EVIDENCE_DIAGNOSES:
+        return diagnosis, Confidence.NONE, reasons
     confidence, confidence_reasons = _confidence(history, metrics, min_executions, max_runs)
     return diagnosis, confidence, reasons + confidence_reasons
 
@@ -46,9 +62,13 @@ def _diagnosis(
         executed_before = history.latest_known is not None or (
             history.state is AvailabilityState.NO_RESULT_WITHIN_LOOKBACK and bool(history.outcomes)
         )
+        selected = history.coverage is Coverage.SELECTION_LIMITED
+        scope = " in the selected runs; runs outside the selection were not scanned" if selected else ""
         if executed_before:
-            return Diagnosis.NOT_RUN_IN_WINDOW, ("an earlier execution is known, but none within the history window",)
-        return Diagnosis.NOT_RUN, ("no execution is known",)
+            return Diagnosis.NOT_RUN_IN_WINDOW, (
+                f"an earlier execution is known, but none within the history window{scope}",
+            )
+        return Diagnosis.NOT_RUN, (f"no execution is known{scope}",)
     if evidence == 0:
         return Diagnosis.INSUFFICIENT_HISTORY, (
             f"no conclusive execution among {m.executions} execution(s) in the window",
@@ -81,14 +101,13 @@ def _diagnosis(
 def _confidence(
     history: ExecutionHistory, m: StabilityMetrics, min_executions: int, max_runs: int
 ) -> tuple[Confidence, tuple[str, ...]]:
+    """Confidence of an evidence-based diagnosis (partial collection is diagnosed ``partial`` before)."""
     evidence = m.evidence_count
     if evidence == 0:
         return Confidence.NONE, ()
     low = []
     if evidence < min_executions:
         low.append(f"confidence is low: fewer than {min_executions} conclusive executions")
-    if history.coverage is Coverage.PARTIAL or history.window_interrupted:
-        low.append("confidence is low: collection was incomplete")
     if not history.key.is_identified:
         low.append("confidence is low: the run's application or platform is not identified")
     if low:

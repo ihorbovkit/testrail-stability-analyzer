@@ -1,9 +1,11 @@
 """End-to-end: synthetic TestRail data -> collection -> analysis. No real API requests."""
 
+import dataclasses
 import unittest
 
-from testrail_stability_analyzer.analysis import Confidence, DefectCoverage, Diagnosis, analyze
+from testrail_stability_analyzer.analysis import Confidence, DefectCoverage, Diagnosis, aggregate_defects, analyze
 from testrail_stability_analyzer.collection import Coverage, HistoricalCollector
+from testrail_stability_analyzer.collection.discovery import TARGETED_LIMITATION
 
 from . import fake_testrail as fx
 from .fake_testrail import AUTOMATION_ISSUE, FAILED, NOW, PASSED, FakeTestRail, days_ago
@@ -92,7 +94,52 @@ class TargetedAnalysisTests(unittest.TestCase):
         self.assertEqual(x.coverage, Coverage.SELECTION_LIMITED)
         self.assertEqual((x.diagnosis, x.confidence), (Diagnosis.INSUFFICIENT_HISTORY, Confidence.LOW))
         self.assertEqual(x.defects.coverage, DefectCoverage.SELECTION_LIMITED)
-        self.assertTrue(any("not project-wide" in note for note in analysis.limitations))
+        self.assertEqual(analysis.limitations.count(TARGETED_LIMITATION), 1)
+        self.assertEqual(len(analysis.limitations), len(set(analysis.limitations)))
+
+
+class FilteredAnalysisTests(unittest.TestCase):
+    def test_filtered_platform_with_defects_is_selection_limited(self):
+        # Platform Y runs are excluded by the filter; BUG-3 lives only in one of them.
+        settings = fx.settings(filters={"platforms": ["Platform X"]})
+        analysis = analyze(collect(build_server(), settings), settings)
+        x = analysis_for(analysis, "Platform X")
+        self.assertEqual(x.defects.defect_ids, ("BUG-1", "BUG-2"))
+        self.assertEqual(x.defects.coverage, DefectCoverage.SELECTION_LIMITED)
+        self.assertEqual(analysis.defect_coverage, DefectCoverage.SELECTION_LIMITED)
+
+    def test_filter_excluding_every_run_is_selection_limited(self):
+        settings = fx.settings(filters={"applications": ["App B"]})
+        report = collect(build_server(), settings)
+        self.assertEqual((report.discovery.included, report.outcomes), ((), ()))
+        analysis = analyze(report, settings)
+        self.assertEqual((analysis.analyses, analysis.case_defects), ((), ()))
+        self.assertEqual(analysis.defect_coverage, DefectCoverage.SELECTION_LIMITED)
+
+    def test_unclassified_run_makes_defects_partial(self):
+        server = build_server()
+        created = days_ago(1)
+        server.add_plan_run(
+            900,
+            fx.run(599, "Nightly", created=created, completed=created + 86_400, config="Plat-Z", plan_id=900),
+            tests=[fx.test(599_001, 100, 599, status_id=FAILED)],
+            results=[fx.result(50_000, 599_001, FAILED, created + 60, defects="BUG-Z")],
+        )
+        settings = fx.settings(filters={"platforms": ["Platform X"]})
+        report = collect(server, settings)
+        self.assertEqual(len(report.discovery.unclassified), 1)
+        analysis = analyze(report, settings)
+        x = analysis_for(analysis, "Platform X")
+        self.assertNotIn("BUG-Z", x.defects.defect_ids)  # never fetched
+        self.assertEqual(x.defects.coverage, DefectCoverage.PARTIAL)
+        self.assertEqual(len(analysis.limitations), len(set(analysis.limitations)))
+
+
+class LimitationTests(unittest.TestCase):
+    def test_duplicate_limitations_are_reported_once(self):
+        settings = fx.settings()
+        report = dataclasses.replace(collect(build_server(), settings), limitations=("same note", "same note"))
+        self.assertEqual(analyze(report, settings).limitations, ("same note",))
 
 
 class PartialAnalysisTests(unittest.TestCase):
@@ -104,6 +151,32 @@ class PartialAnalysisTests(unittest.TestCase):
         self.assertEqual(analysis.defect_coverage, DefectCoverage.PARTIAL)
         self.assertTrue(all(a.diagnosis is Diagnosis.PARTIAL for a in analysis.analyses))
         self.assertTrue(all(a.defects.coverage is DefectCoverage.PARTIAL for a in analysis.analyses))
+
+
+class ConfiguredVersionFieldTests(unittest.TestCase):
+    def test_defect_sources_use_the_configured_result_field(self):
+        server = FakeTestRail()
+        created = days_ago(2)
+        server.add_plan(900, "App-A Nightly", created=created, completed=created + 86_400)
+        server.add_plan_run(
+            900,
+            fx.run(500, "Nightly", created=created, completed=created + 86_400, config="Plat-X", plan_id=900),
+            tests=[fx.test(500_001, 100, 500, status_id=FAILED)],
+            results=[
+                fx.result(1, 500_001, FAILED, created + 60, defects="BUG-1", version="std-1.0"),
+                fx.result(2, 500_001, FAILED, created + 120, defects="BUG-2", custom_app_build="b-42"),
+            ],
+        )
+        settings = fx.settings(mappings={"custom_fields": {"application_version": "custom_app_build"}})
+        report = collect(server, settings)
+        self.assertEqual(report.outcomes[0].application_version, "b-42")
+        sources = {d.defect_id: d.sources[0] for d in aggregate_defects(report)[0].defects}
+        # The standard field is not the configured one, so the first record has no version.
+        self.assertEqual(
+            {defect_id: source.application_version for defect_id, source in sources.items()},
+            {"BUG-1": None, "BUG-2": "b-42"},
+        )
+        self.assertEqual(analyze(report, settings).defects_for(100).defects, aggregate_defects(report)[0].defects)
 
 
 if __name__ == "__main__":

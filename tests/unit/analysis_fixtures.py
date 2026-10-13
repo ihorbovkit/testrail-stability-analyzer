@@ -30,9 +30,9 @@ UNRESOLVED = DimensionValue(DimensionState.UNRESOLVED)
 RESOLVER = fx.resolver()
 
 
-def rec(result_id, status_id, days, defects=None):
+def rec(result_id, status_id, days, defects=None, version=None):
     """A result record spec; ``days`` before NOW, or ``None`` for an undated record."""
-    return (result_id, status_id, days, defects)
+    return (result_id, status_id, days, defects, version)
 
 
 def outcome(run_id, case_id, *records, app=APP_A, platform=PLAT_X, plan_id=None, complete=True, test_status=None):
@@ -47,9 +47,10 @@ def outcome(run_id, case_id, *records, app=APP_A, platform=PLAT_X, plan_id=None,
             status_id=status_id,
             created_on=None if days is None else NOW - timedelta(days=days),
             defects=defects,
+            version=version,
             run_id=run_id,
         )
-        for result_id, status_id, days, defects in records
+        for result_id, status_id, days, defects, version in records
     ]
     test = Test(id=test_id, case_id=case_id, run_id=run_id, status_id=test_status)
     return build_outcome(source, test, results, RESOLVER, results_complete=complete)

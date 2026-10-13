@@ -9,12 +9,20 @@ from testrail_stability_analyzer.analysis import (
     defect_coverage,
     parse_defects,
 )
-from testrail_stability_analyzer.collection import ResolvedResult, RunScan
+from testrail_stability_analyzer.collection import (
+    DiscoveredRun,
+    DiscoveryResult,
+    ResolvedResult,
+    RunClassification,
+    RunDecision,
+    RunScan,
+)
 from testrail_stability_analyzer.config import StatusCategory
-from testrail_stability_analyzer.models import Result
+from testrail_stability_analyzer.collection import build_outcome
+from testrail_stability_analyzer.models import Result, Run, Test
 
 from . import fake_testrail as fx
-from .analysis_fixtures import APP_B, PLAT_X, PLAT_Y, RESOLVER, histories, outcome, rec, report
+from .analysis_fixtures import APP_A, APP_B, PLAT_X, PLAT_Y, RESOLVER, UNRESOLVED, histories, outcome, rec, report
 from .fake_testrail import AUTOMATION_ISSUE, FAILED, NOW, PASSED
 
 
@@ -167,6 +175,159 @@ class CompletenessTests(unittest.TestCase):
         self.assertTrue(any("not attributed to a case" in note for note in analysis.limitations))
         self.assertEqual(analysis.defects_for(100).coverage, DefectCoverage.COMPLETE)
         self.assertEqual(analysis.defects_for(100).defect_ids, ())
+
+
+def discovered(run_id, decision, *, suite_id=10, platform=PLAT_X):
+    run = Run(id=run_id, name=f"Run {run_id}", suite_id=suite_id)
+    return DiscoveredRun(run, RunClassification(APP_A, platform), decision)
+
+
+class NotCollectedRunTests(unittest.TestCase):
+    """Discovered runs that were not collected may hold records of any collected case."""
+
+    def setUp(self):
+        self.outcomes = [outcome(500, 100, rec(1, FAILED, 1, "BUG-1"))]
+        self.included = discovered(500, RunDecision.INCLUDED)
+
+    def with_runs(self, *extra, targeted=False, complete=True):
+        discovery = DiscoveryResult(runs=(self.included, *extra), complete=complete, targeted=targeted)
+        return report(self.outcomes, discovery=discovery)
+
+    def test_filtered_run_makes_a_non_empty_list_selection_limited(self):
+        for decision in (RunDecision.EXCLUDED_BY_FILTER, RunDecision.EXCLUDED_BY_NAME):
+            with self.subTest(decision=decision):
+                defects = case(self.with_runs(discovered(600, decision, platform=PLAT_Y)))
+                self.assertEqual(defects.defect_ids, ("BUG-1",))
+                self.assertEqual(defects.coverage, DefectCoverage.SELECTION_LIMITED)
+                self.assertTrue(any("excluded by naming patterns or filters" in note for note in defects.notes))
+
+    def test_unclassified_run_is_partial(self):
+        defects = case(self.with_runs(discovered(600, RunDecision.UNCLASSIFIED, platform=UNRESOLVED)))
+        self.assertEqual(defects.defect_ids, ("BUG-1",))
+        self.assertEqual(defects.coverage, DefectCoverage.PARTIAL)
+        self.assertTrue(any("could not be classified" in note for note in defects.notes))
+
+    def test_partial_wins_and_keeps_selection_notes(self):
+        rep = self.with_runs(
+            discovered(600, RunDecision.UNCLASSIFIED), discovered(601, RunDecision.EXCLUDED_BY_FILTER), targeted=True
+        )
+        coverage, notes = defect_coverage(rep)
+        self.assertEqual(coverage, DefectCoverage.PARTIAL)
+        self.assertEqual(len(notes), 3)
+        self.assertTrue(any("only the selected plans and runs" in note for note in notes))
+        self.assertTrue(any("1 run(s) excluded" in note for note in notes))
+
+    def test_incomplete_discovery_is_partial(self):
+        defects = case(self.with_runs(complete=False))
+        self.assertEqual((defects.coverage, defects.defect_ids), (DefectCoverage.PARTIAL, ("BUG-1",)))
+        self.assertTrue(any("discovery was incomplete" in note for note in defects.notes))
+
+    def test_runs_of_another_suite_cannot_hold_the_cases(self):
+        rep = self.with_runs(discovered(600, RunDecision.EXCLUDED_BY_FILTER, suite_id=99))
+        self.assertEqual(defect_coverage(rep), (DefectCoverage.COMPLETE, ()))
+
+    def test_unknown_suites_are_conservative(self):
+        self.included = discovered(500, RunDecision.INCLUDED, suite_id=None)
+        rep = self.with_runs(discovered(600, RunDecision.EXCLUDED_BY_FILTER, suite_id=99))
+        self.assertEqual(defect_coverage(rep)[0], DefectCoverage.SELECTION_LIMITED)
+
+    def test_runs_outside_the_lookback_do_not_limit_coverage(self):
+        rep = self.with_runs(discovered(600, RunDecision.OUTSIDE_LOOKBACK))
+        self.assertEqual(defect_coverage(rep), (DefectCoverage.COMPLETE, ()))
+
+    def test_no_included_run_is_never_complete(self):
+        cases = (
+            ((RunDecision.EXCLUDED_BY_FILTER,), DefectCoverage.SELECTION_LIMITED),
+            ((RunDecision.EXCLUDED_BY_NAME,), DefectCoverage.SELECTION_LIMITED),
+            ((RunDecision.UNCLASSIFIED,), DefectCoverage.PARTIAL),
+            ((RunDecision.UNCLASSIFIED, RunDecision.EXCLUDED_BY_FILTER), DefectCoverage.PARTIAL),
+        )
+        for decisions, expected in cases:
+            with self.subTest(decisions=decisions):
+                runs = tuple(discovered(600 + i, decision) for i, decision in enumerate(decisions))
+                rep = report([], hist=(), discovery=DiscoveryResult(runs=runs, complete=True))
+                self.assertEqual(defect_coverage(rep)[0], expected)
+                defects = aggregate_defects(rep, [100])[0]
+                self.assertEqual((defects.defect_ids, defects.coverage), ((), expected))
+                self.assertEqual(analyze(rep, fx.settings()).defect_coverage, expected)
+
+    def test_no_included_run_counts_runs_of_any_suite(self):
+        other_suite = discovered(600, RunDecision.EXCLUDED_BY_FILTER, suite_id=99)
+        rep = report([], hist=(), discovery=DiscoveryResult(runs=(other_suite,), complete=True))
+        self.assertEqual(defect_coverage(rep)[0], DefectCoverage.SELECTION_LIMITED)
+
+    def test_empty_discovery_is_complete(self):
+        rep = report([], hist=(), discovery=DiscoveryResult(runs=(), complete=True))
+        self.assertEqual(defect_coverage(rep), (DefectCoverage.COMPLETE, ()))
+
+    def test_analysis_reports_the_same_coverage(self):
+        rep = self.with_runs(discovered(600, RunDecision.EXCLUDED_BY_FILTER))
+        analysis = analyze(rep, fx.settings())
+        self.assertEqual(analysis.defect_coverage, DefectCoverage.SELECTION_LIMITED)
+        self.assertEqual(analysis.defects_for(100).coverage, DefectCoverage.SELECTION_LIMITED)
+
+
+class SourceVersionTests(unittest.TestCase):
+    def test_each_source_carries_its_own_version(self):
+        retried = outcome(
+            500,
+            100,
+            rec(1, FAILED, 2, "BUG-1", version="1.0"),
+            rec(2, None, 1.9, "BUG-2"),  # comment-only triage without a version
+            rec(3, FAILED, 1.8, "BUG-3", version="1.1"),
+        )
+        self.assertEqual(retried.application_version, "1.1")
+        defects = case(report([retried]))
+        versions = {d.defect_id: d.sources[0].application_version for d in defects.defects}
+        self.assertEqual(versions, {"BUG-1": "1.0", "BUG-2": None, "BUG-3": "1.1"})
+
+    def test_final_version_is_not_attributed_to_intermediate_records(self):
+        retried = outcome(500, 100, rec(1, FAILED, 2, "BUG-1"), rec(2, PASSED, 1.9, version="2.0"))
+        self.assertEqual(retried.application_version, "2.0")
+        source = case(report([retried])).defects[0].sources[0]
+        self.assertEqual((source.is_final_result, source.application_version), (False, None))
+
+    def custom_outcome(self, *results):
+        source = DiscoveredRun(Run(id=500, name="Run 500"), RunClassification(APP_A, PLAT_X), RunDecision.INCLUDED)
+        test = Test(id=500100, case_id=100, run_id=500)
+        return build_outcome(source, test, results, RESOLVER, version_field="custom_app_build")
+
+    def custom_result(self, result_id, status_id, hours, defects=None, *, build=None, version=None):
+        return Result(
+            id=result_id,
+            test_id=500100,
+            status_id=status_id,
+            created_on=NOW - timedelta(hours=hours),
+            defects=defects,
+            version=version,
+            run_id=500,
+            custom_fields={} if build is None else {"custom_app_build": build},
+        )
+
+    def test_direct_aggregation_uses_the_configured_field(self):
+        resolved = self.custom_outcome(self.custom_result(1, FAILED, 1, "BUG-1", build="b-42"))
+        self.assertEqual(resolved.results[0].application_version, "b-42")
+        self.assertEqual(case(report([resolved])).defects[0].sources[0].application_version, "b-42")
+
+    def test_configured_field_wins_over_the_standard_version(self):
+        resolved = self.custom_outcome(self.custom_result(1, FAILED, 1, "BUG-1", build="b-42", version="std-1.0"))
+        self.assertEqual(resolved.application_version, "b-42")
+        rep = report([resolved])
+        self.assertEqual(case(rep).defects[0].sources[0].application_version, "b-42")
+        self.assertEqual(analyze(rep, fx.settings()).defects_for(100).defects[0].sources[0].application_version, "b-42")
+
+    def test_intermediate_record_without_the_configured_field_has_no_version(self):
+        resolved = self.custom_outcome(
+            self.custom_result(1, FAILED, 2, "BUG-1", version="std-1.0"),  # standard field only
+            self.custom_result(2, PASSED, 1, build="b-42"),
+        )
+        self.assertEqual(resolved.application_version, "b-42")
+        source = case(report([resolved])).defects[0].sources[0]
+        self.assertEqual((source.is_final_result, source.application_version), (False, None))
+
+    def test_hand_built_resolved_result_has_no_version(self):
+        result = Result(id=1, test_id=1, status_id=FAILED, created_on=days(1), version="1.0", run_id=500)
+        self.assertIsNone(ResolvedResult(result, RESOLVER.resolve(FAILED)).application_version)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,9 @@ reporting period (the history window). The stability ``max_runs`` cap does not
 apply. Only the result ``defects`` field is read; case-level ``refs`` are not
 execution defects. Identifiers are kept exactly as entered: no tracker URLs
 are derived.
+
+Coverage is report-wide, since a run that was not scanned may hold records of
+any collected case (see :func:`defect_coverage`).
 """
 
 from __future__ import annotations
@@ -15,7 +18,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from ..collection.history import may_hold_window_results
-from ..collection.models import CollectionReport, ResolvedResult, RunOutcome
+from ..collection.models import CollectionReport, DiscoveredRun, ResolvedResult, RunDecision, RunOutcome
 from .models import CaseDefects, DefectCoverage, DefectReference, DefectSource
 
 
@@ -27,7 +30,16 @@ def parse_defects(value: str | None) -> tuple[str, ...]:
 
 
 def defect_coverage(report: CollectionReport) -> tuple[DefectCoverage, tuple[str, ...]]:
-    """Report-wide, since any unscanned run may hold records of any case."""
+    """Report-wide, since any run that was not scanned may hold records of any case.
+
+    ``partial``: runs within the collection scope may be missing (interrupted
+    collection, incomplete discovery, unscanned included runs, or runs that
+    could not be classified for the configured filters). ``selection_limited``:
+    the scope itself excludes runs (targeted selection, naming patterns,
+    filters). Runs of another suite cannot hold the collected cases and are
+    ignored when the suites are known. Completed runs created before the
+    lookback start are outside the scan, as for the latest known result.
+    """
     notes = []
     if report.budget_exhausted:
         notes.append("request budget exhausted: defect references may be missing")
@@ -42,11 +54,38 @@ def defect_coverage(report: CollectionReport) -> tuple[DefectCoverage, tuple[str
     ]
     if unscanned:
         notes.append(f"{len(unscanned)} run(s) with possible results in the period were not fully scanned")
-    if notes:
-        return DefectCoverage.PARTIAL, tuple(notes)
+    not_collected = _not_collected(report)
+    unclassified = sum(1 for run in not_collected if run.decision is RunDecision.UNCLASSIFIED)
+    if unclassified:
+        notes.append(
+            f"{unclassified} run(s) could not be classified for the configured filters and were not scanned: "
+            "defect references may be missing"
+        )
+    selection = []
     if report.discovery.targeted:
-        return DefectCoverage.SELECTION_LIMITED, ("only the selected plans and runs were scanned",)
+        selection.append("only the selected plans and runs were scanned")
+    excluded = len(not_collected) - unclassified
+    if excluded:
+        selection.append(f"{excluded} run(s) excluded by naming patterns or filters were not scanned")
+    if notes:
+        return DefectCoverage.PARTIAL, tuple(notes + selection)
+    if selection:
+        return DefectCoverage.SELECTION_LIMITED, tuple(selection)
     return DefectCoverage.COMPLETE, ()
+
+
+def _not_collected(report: CollectionReport) -> list[DiscoveredRun]:
+    """Discovered runs that were not collected but may hold records of the collected cases."""
+    included = report.discovery.included
+    suites = {run.run.suite_id for run in included}
+    # With nothing included no suite is known, so every excluded run may hold the cases.
+    known_suites = suites if suites and None not in suites else None
+    return [
+        run
+        for run in report.discovery.runs
+        if run.decision in (RunDecision.EXCLUDED_BY_NAME, RunDecision.EXCLUDED_BY_FILTER, RunDecision.UNCLASSIFIED)
+        and (known_suites is None or run.run.suite_id is None or run.run.suite_id in known_suites)
+    ]
 
 
 def aggregate_defects(report: CollectionReport, case_ids: Iterable[int] = ()) -> tuple[CaseDefects, ...]:
@@ -130,7 +169,8 @@ def _source(outcome: RunOutcome, record: ResolvedResult, final_id: int | None) -
         is_final_result=record.result.id == final_id,
         application=classification.application,
         platform=classification.platform,
-        application_version=outcome.application_version,
+        # The record's own version only: the run's (final) version is not attributed to retries or triage.
+        application_version=record.application_version,
     )
 
 

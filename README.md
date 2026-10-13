@@ -548,7 +548,7 @@ defect aggregation.
 | `failure_rate` | `failed / evidence_count` |
 | `automation_issue_rate` | `automation_issue / evidence_count`, tracked separately from failures |
 | `retry_triage_count` / `retry_triage_rate` | executions with more than one result record / `executions` |
-| `status_changed_within_run` | executions whose first status-bearing record differs in category from the final one |
+| `status_changed_within_run` | executions with a category change between consecutive status-bearing records (e.g. failed → passed, or failed → passed → failed); comment-only records are ignored |
 | `transitions` | changes of final category between consecutive executions, oldest to newest |
 | `latest_*` | latest known result, which may be older than the window |
 
@@ -591,8 +591,8 @@ A = automation issue, E = P + F + A, n = `analysis.min_executions`):
 
 | Level | Rule |
 |---|---|
-| `none` | no conclusive execution |
-| `low` | fewer than `min_executions` conclusive executions, partial coverage, an interrupted window, or an unidentified application/platform |
+| `none` | no conclusive execution, or a diagnosis that does not rest on execution evidence (`not_applicable`, `partial`, `unresolved_applicability`, `not_run_in_window`, `not_run`); metrics are still reported unchanged |
+| `low` | fewer than `min_executions` conclusive executions, or an unidentified application/platform |
 | `medium` | at least `min_executions`, but fewer than `history.max_runs`, conclusive executions; or `max_runs` with a window that may be incomplete (e.g. `selection_limited`) |
 | `high` | `history.max_runs` conclusive executions, `complete` or `lookback_limited` coverage, and a complete window |
 
@@ -602,7 +602,9 @@ Each analysis carries the history's `coverage` and `coverage_notes`;
 `AnalysisReport.limitations` adds collection limitations. Targeted collection
 (selected plans or runs) is `selection_limited`: it is not project-wide
 historical coverage, so it can never reach `high` confidence, and a single
-selected plan normally yields `insufficient_history`. Partial collection,
+selected plan normally yields `insufficient_history`; `not_run` and
+`not_run_in_window` reasons then state that only the selected runs were
+searched. Partial collection,
 selection limits, insufficient evidence, and not-applicable cases are always
 reported as distinct values.
 
@@ -622,13 +624,23 @@ object is attached to every analysis of the case.
   are derived.
 - Each `DefectReference` lists its sources: result, test, run, and plan IDs,
   timestamp, status category, whether it is the run's final record,
-  application, platform, and version. Comments are not included.
+  application, platform, and the version recorded on that result itself
+  (read from the configured version field during collection; `None` if it
+  has none; the final result's version is not attributed to retries or
+  triage records). Comments are not included.
 - Case and test `refs` fields are not execution defects and are ignored.
 - `coverage` (`complete`, `selection_limited`, `partial`) is report-wide,
-  since an unscanned run may hold records of any case. An empty list with
-  `complete` coverage means no defect was linked; with `partial` it means
-  none was found in incomplete data. `records_examined` shows how many
-  records were checked.
+  since a run that was not scanned may hold records of any case:
+  - `partial`: runs within the collection scope may be missing (request
+    budget, record cap, incomplete discovery, unscanned included runs, or
+    runs that could not be classified for the configured filters);
+  - `selection_limited`: everything in scope was scanned, but the scope
+    excludes runs (targeted selection, naming patterns, or filters);
+  - `complete`: every discovered run that may hold records was scanned.
+  Excluded runs of another suite are ignored when suite IDs are known.
+  An empty list with `complete` coverage means no defect was linked;
+  otherwise it means none was found in the scanned runs. `records_examined`
+  shows how many records were checked.
 - Records of tests no longer in their run (orphans) have no known case; their
   count is reported in `orphan_records_with_defects` and the limitations,
   without downgrading every case.
@@ -812,8 +824,10 @@ tests/integration/   reserved for opt-in live tests
 - Window membership of an execution uses its **final** result's timestamp,
   while defect aggregation uses each record's own timestamp; for a run whose
   records straddle the window start, the two can differ.
-- Defect coverage is report-wide: one unscanned run marks every case's defect
-  list `partial`.
+- Defect coverage is report-wide: one unscanned or unclassified run marks
+  every case's defect list `partial`, and one run excluded by naming patterns
+  or filters marks it `selection_limited`, whether or not that run contains
+  the case (finding out would need extra requests).
 - Discovery relies on TestRail's `created_after`/`created_before`/
   `is_completed` filters; their boundary-second semantics are handled by
   overlapping queries.

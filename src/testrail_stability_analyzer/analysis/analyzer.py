@@ -27,9 +27,7 @@ def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
 
     coverage, _ = defect_coverage(report)
     orphans = orphan_records_with_defects(report)
-    limitations = list(report.limitations)
-    if report.discovery.targeted:
-        limitations.append("targeted collection: the selected plans and runs are not project-wide historical coverage")
+    limitations = list(report.limitations)  # includes the targeted-collection note of discovery
     if orphans:
         limitations.append(
             f"{orphans} defect-bearing result record(s) in the period belong to tests no longer in their run "
@@ -47,5 +45,5 @@ def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
         case_defects=case_defects,
         defect_coverage=coverage,
         orphan_records_with_defects=orphans,
-        limitations=tuple(limitations),
+        limitations=tuple(dict.fromkeys(limitations)),
     )

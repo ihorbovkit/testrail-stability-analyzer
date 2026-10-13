@@ -124,6 +124,8 @@ class ResolvedResult:
 
     result: Result
     status: ResolvedStatus | None
+    # Version recorded on this record itself, read from the configured result field during collection.
+    application_version: str | None = None
 
     @property
     def is_comment_only(self) -> bool:

@@ -262,12 +262,14 @@ class ReportInfoTests(unittest.TestCase):
         self.assertEqual(values["Collection mode"], "project-wide")
         self.assertEqual(values["Test cases"], "2")
         self.assertEqual(values["Histories not shown (unidentified application or platform)"], "1")
+        self.assertEqual(values["Histories not shown (application or platform excluded by filters)"], "0")
         self.assertEqual(values["Feature / Test Group"], "not requested")
         self.assertEqual(values["Collection status"], "OK")
         limitations = [value for label, value, _ in items if label == "Limitation"]
         self.assertIn("synthetic collection limitation", limitations)
         self.assertIn("synthetic report note", limitations)
         self.assertTrue(any("unidentified application or platform" in note for note in limitations))
+        self.assertFalse(any("excluded by the configured filters" in note for note in limitations))
         legend = {label: (value, style) for label, value, style in items if label.startswith("Legend")}
         self.assertEqual(legend["Legend: Red"][1], "red")
         self.assertIn("does not confirm an application defect", legend["Legend: Red"][0])

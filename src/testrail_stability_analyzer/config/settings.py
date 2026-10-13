@@ -11,6 +11,7 @@ import math
 import os
 import re
 import tomllib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -434,8 +435,12 @@ class _Parser:
             group = {}
         self._check_keys(group, path, {"enabled", "separator", "max_depth", "include_suite_name"})
         separator = group.get("separator", DEFAULT_FEATURE_GROUP_SEPARATOR)
-        # Not stripped: a separator such as " / " is kept as written.
-        if not isinstance(separator, str) or not separator or any(ord(char) < 32 for char in separator):
+        # Not stripped: a separator such as " / " is kept as written. Category Cc is C0, DEL, and C1.
+        if (
+            not isinstance(separator, str)
+            or not separator
+            or any(unicodedata.category(char) == "Cc" for char in separator)
+        ):
             self.errors.append(f"{path}.separator must be a non-empty string without control characters")
             separator = DEFAULT_FEATURE_GROUP_SEPARATOR
         max_depth = self._integer(group, "max_depth", path, default=0, minimum=0)

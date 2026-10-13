@@ -996,8 +996,9 @@ tests/integration/   reserved for opt-in live tests
   values are matched as configured, and Class Name shows the raw value.
 - Feature / Test Group is the case's **current** section at report time; for
   a case moved since, older executions are shown under its new group.
-- In reports, histories with an unidentified application or platform are
-  only counted in `Report Info`, not shown in combination columns.
+- In reports, histories with an unidentified application or platform, or
+  with one outside the configured filters, are only counted in `Report Info`
+  (separately), not shown in combination columns.
 - The Overview colour follows the latest status, except for `Inconsistent`
   (yellow). A history diagnosed `automation_issue_evidence` whose latest
   result passed shows a green Passed; its note and Stability Details show the

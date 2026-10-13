@@ -364,6 +364,8 @@ def _info_sheet(
     pairs = combinations(settings)
     placed = set(pairs)
     shown = [a for a in identified if (a.key.application.name, a.key.platform.name) in placed]
+    unidentified = len(analysis.analyses) - len(identified)
+    filtered = len(identified) - len(shown)  # identified, but not in the configured combinations
     items: list[tuple[str, Cell]] = [
         ("Report", Cell("TestRail stability report (read-only)")),
         ("Collected at (UTC)", Cell(collection.collected_at, "datetime")),
@@ -391,7 +393,8 @@ def _info_sheet(
         ("Application / platform combinations", Cell(len(pairs))),
         ("Histories (case / application / platform)", Cell(len(analysis.analyses))),
         ("Histories shown in combination columns", Cell(len(shown))),
-        ("Histories not shown (unidentified application or platform)", Cell(len(analysis.analyses) - len(shown))),
+        ("Histories not shown (unidentified application or platform)", Cell(unidentified)),
+        ("Histories not shown (application or platform excluded by filters)", Cell(filtered)),
         ("Coverage", Cell(_counts(COVERAGE_LABELS[a.coverage] for a in analysis.analyses))),
         ("Diagnoses", Cell(_counts(DIAGNOSIS_LABELS[a.diagnosis][0] for a in analysis.analyses))),
         ("Overview statuses (shown histories)", Cell(_counts(str(overview_cell(a).value) for a in shown))),
@@ -399,9 +402,14 @@ def _info_sheet(
         ("Feature / Test Group", Cell(_group_summary(_report_groups(analysis, settings)))),
     ]
     limitations = list(dict.fromkeys([*analysis.limitations, *notes]))
-    if len(shown) < len(analysis.analyses):
+    if unidentified:
         limitations.append(
-            f"{len(analysis.analyses) - len(shown)} history(ies) with an unidentified application or platform "
+            f"{unidentified} history(ies) with an unidentified application or platform "
+            "are not shown in the combination columns"
+        )
+    if filtered:
+        limitations.append(
+            f"{filtered} history(ies) with an application or platform excluded by the configured filters "
             "are not shown in the combination columns"
         )
     items += _coverage_notes(analysis)

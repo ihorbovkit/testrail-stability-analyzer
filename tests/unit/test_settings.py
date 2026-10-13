@@ -335,6 +335,8 @@ class ReportSettingsTests(unittest.TestCase):
         for group, message in (
             ({"separator": ""}, "report.feature_group.separator"),
             ({"separator": "\n"}, "report.feature_group.separator"),
+            ({"separator": "\x7f"}, "report.feature_group.separator"),
+            ({"separator": " \x85 "}, "report.feature_group.separator"),
             ({"max_depth": -1}, "report.feature_group.max_depth must be >= 0"),
             ({"enabled": "yes"}, "report.feature_group.enabled must be true or false"),
             ({"group_by": "plan"}, "report.feature_group.group_by: unknown setting"),

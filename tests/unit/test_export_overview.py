@@ -127,6 +127,29 @@ class CaseColumnTests(unittest.TestCase):
         self.assertEqual(self.case_fields(only_undated), (None, "Automated"))
 
 
+class FilteredHistoryTests(unittest.TestCase):
+    def test_histories_excluded_by_filters_are_not_counted_as_unidentified(self):
+        collection, analysis, settings = sample_inputs()
+        only_b = dataclasses.replace(settings, filters=dataclasses.replace(settings.filters, applications=("App B",)))
+        info = build_report(collection, analysis, only_b, case_types=CASE_TYPES).info
+        values = [(row[0].value, row[1].value) for row in info.rows]
+        app_a = sum(1 for a in analysis.analyses if a.key.is_identified and a.key.application.name == "App A")
+        self.assertGreater(app_a, 0)
+        items = dict(values)
+        self.assertEqual(items["Histories not shown (unidentified application or platform)"], 1)  # case 108
+        self.assertEqual(items["Histories not shown (application or platform excluded by filters)"], app_a)
+        limitations = [value for label, value in values if label == "Limitation"]
+        self.assertIn(
+            "1 history(ies) with an unidentified application or platform are not shown in the combination columns",
+            limitations,
+        )
+        self.assertIn(
+            f"{app_a} history(ies) with an application or platform excluded by the configured filters "
+            "are not shown in the combination columns",
+            limitations,
+        )
+
+
 class XmlCompatibilityTests(unittest.TestCase):
     def render(self):
         collection, analysis, settings = sample_inputs()

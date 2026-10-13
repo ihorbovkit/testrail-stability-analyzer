@@ -56,7 +56,11 @@ def build_outcome(
     results_complete: bool = True,
 ) -> RunOutcome:
     ordered = tuple(
-        ResolvedResult(result, None if result.status_id is None else resolver.resolve(result.status_id))
+        ResolvedResult(
+            result,
+            None if result.status_id is None else resolver.resolve(result.status_id),
+            result_version(result, version_field),
+        )
         for result in sort_chronologically(results)
     )
     final = select_final(ordered)
@@ -66,7 +70,7 @@ def build_outcome(
         results=ordered,
         final=final,
         current_status=None if test.status_id is None else resolver.resolve(test.status_id),
-        application_version=_application_version(final, ordered, version_field),
+        application_version=_application_version(final, ordered),
         evidence_truncated=evidence_truncated,
         results_complete=results_complete,
     )
@@ -82,16 +86,10 @@ def field_value(record: Case | Test | Result, system_name: str, default: Any = N
     return default
 
 
-def _application_version(
-    final: ResolvedResult | None, ordered: tuple[ResolvedResult, ...], version_field: str | None
-) -> str | None:
+def _application_version(final: ResolvedResult | None, ordered: tuple[ResolvedResult, ...]) -> str | None:
     """The version on the final result, else the most recent record that has one."""
     candidates = ([final] if final is not None else []) + list(reversed(ordered))
-    for resolved in candidates:
-        value = result_version(resolved.result, version_field)
-        if value is not None:
-            return value
-    return None
+    return next((resolved.application_version for resolved in candidates if resolved.application_version), None)
 
 
 def result_version(result: Result, version_field: str | None = None) -> str | None:

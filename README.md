@@ -625,8 +625,9 @@ object is attached to every analysis of the case.
 - Each `DefectReference` lists its sources: result, test, run, and plan IDs,
   timestamp, status category, whether it is the run's final record,
   application, platform, and the version recorded on that result itself
-  (`None` if it has none; the final result's version is not attributed to
-  retries or triage records). Comments are not included.
+  (read from the configured version field during collection; `None` if it
+  has none; the final result's version is not attributed to retries or
+  triage records). Comments are not included.
 - Case and test `refs` fields are not execution defects and are ignored.
 - `coverage` (`complete`, `selection_limited`, `partial`) is report-wide,
   since a run that was not scanned may hold records of any case:

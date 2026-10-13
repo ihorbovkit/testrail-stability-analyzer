@@ -19,7 +19,6 @@ from datetime import datetime
 
 from ..collection.history import may_hold_window_results
 from ..collection.models import CollectionReport, DiscoveredRun, ResolvedResult, RunDecision, RunOutcome
-from ..collection.outcomes import result_version
 from .models import CaseDefects, DefectCoverage, DefectReference, DefectSource
 
 
@@ -79,7 +78,8 @@ def _not_collected(report: CollectionReport) -> list[DiscoveredRun]:
     """Discovered runs that were not collected but may hold records of the collected cases."""
     included = report.discovery.included
     suites = {run.run.suite_id for run in included}
-    known_suites = None if None in suites else suites
+    # With nothing included no suite is known, so every excluded run may hold the cases.
+    known_suites = suites if suites and None not in suites else None
     return [
         run
         for run in report.discovery.runs
@@ -88,13 +88,8 @@ def _not_collected(report: CollectionReport) -> list[DiscoveredRun]:
     ]
 
 
-def aggregate_defects(
-    report: CollectionReport, case_ids: Iterable[int] = (), *, version_field: str | None = None
-) -> tuple[CaseDefects, ...]:
-    """One entry per case with collected outcomes (plus ``case_ids``), ordered by case ID.
-
-    ``version_field``: result field holding the application version (default ``version``).
-    """
+def aggregate_defects(report: CollectionReport, case_ids: Iterable[int] = ()) -> tuple[CaseDefects, ...]:
+    """One entry per case with collected outcomes (plus ``case_ids``), ordered by case ID."""
     coverage, notes = defect_coverage(report)
     by_case: dict[int, list[RunOutcome]] = defaultdict(list)
     for case_id in case_ids:
@@ -102,8 +97,7 @@ def aggregate_defects(
     for outcome in report.outcomes:
         by_case[outcome.case_id].append(outcome)
     return tuple(
-        _case_defects(case_id, by_case[case_id], report.window_start, coverage, notes, version_field)
-        for case_id in sorted(by_case)
+        _case_defects(case_id, by_case[case_id], report.window_start, coverage, notes) for case_id in sorted(by_case)
     )
 
 
@@ -122,7 +116,6 @@ def _case_defects(
     window_start: datetime,
     coverage: DefectCoverage,
     coverage_notes: tuple[str, ...],
-    version_field: str | None,
 ) -> CaseDefects:
     sources: dict[str, list[DefectSource]] = defaultdict(list)
     examined = with_defects = undated = 0
@@ -139,7 +132,7 @@ def _case_defects(
             examined += 1
             with_defects += bool(ids)
             for defect_id in ids:
-                sources[defect_id].append(_source(outcome, record, final_id, version_field))
+                sources[defect_id].append(_source(outcome, record, final_id))
     defects = sorted(
         (DefectReference(defect_id, tuple(sorted(items, key=_source_order))) for defect_id, items in sources.items()),
         key=lambda defect: (_source_order(defect.sources[0]), defect.defect_id),
@@ -163,9 +156,7 @@ def _in_period(record: ResolvedResult, window_start: datetime) -> bool | None:
     return None if created is None else created >= window_start
 
 
-def _source(
-    outcome: RunOutcome, record: ResolvedResult, final_id: int | None, version_field: str | None
-) -> DefectSource:
+def _source(outcome: RunOutcome, record: ResolvedResult, final_id: int | None) -> DefectSource:
     classification = outcome.source.classification
     assert record.result.created_on is not None  # undated records are excluded before
     return DefectSource(
@@ -179,7 +170,7 @@ def _source(
         application=classification.application,
         platform=classification.platform,
         # The record's own version only: the run's (final) version is not attributed to retries or triage.
-        application_version=result_version(record.result, version_field),
+        application_version=record.application_version,
     )
 
 

@@ -16,11 +16,7 @@ from .models import AnalysisReport, KeyAnalysis
 def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
     min_executions = settings.analysis.min_executions
     max_runs = settings.history.max_runs
-    case_defects = aggregate_defects(
-        report,
-        (history.key.case_id for history in report.histories),
-        version_field=settings.mappings.custom_fields.get("application_version"),
-    )
+    case_defects = aggregate_defects(report, (history.key.case_id for history in report.histories))
     defects_by_case = {defects.case_id: defects for defects in case_defects}
     analyses = []
     for history in report.histories:

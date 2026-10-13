@@ -115,8 +115,9 @@ class KeychainCredentialProvider:
     def get_credentials(self) -> Credentials:
         if self._platform != "darwin":
             raise CredentialError("the macOS Keychain credential provider is only available on macOS")
-        api_key = self._read_password()
-        return Credentials(username=self._username(), api_key=api_key)
+        # The username is resolved first so that a missing variable never triggers a Keychain read.
+        username = self._username()
+        return Credentials(username=username, api_key=self._read_password())
 
     def _read_password(self) -> str:
         command = [SECURITY_EXECUTABLE, "find-generic-password", "-s", self._service, "-a", self._account, "-w"]

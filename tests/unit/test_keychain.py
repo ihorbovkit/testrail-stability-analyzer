@@ -55,9 +55,11 @@ class KeychainCredentialProviderTests(unittest.TestCase):
 
         self.assertEqual(credentials.username, "other@example.invalid")
 
-    def test_missing_username_variable(self):
+    def test_missing_username_variable_fails_before_reading_the_keychain(self):
+        runner = FakeRunner()
         with self.assertRaisesRegex(CredentialError, "EXAMPLE_USER"):
-            provider(FakeRunner(), username_variable="EXAMPLE_USER", environ={}).get_credentials()
+            provider(runner, username_variable="EXAMPLE_USER", environ={}).get_credentials()
+        self.assertEqual(runner.calls, [])
 
     def test_missing_item(self):
         with self.assertRaisesRegex(CredentialError, "no macOS Keychain item found") as context:

@@ -161,6 +161,19 @@ class RunSelectionTests(unittest.TestCase):
 
         self.assertEqual(server.calls.count("get_plan/900"), 1)
 
+    def test_run_is_kept_when_budget_runs_out_fetching_its_parent_plan(self):
+        server = build_server()
+        report = collect(server, settings(run_ids=[503], http={"max_requests_per_execution": 1}))
+
+        self.assertEqual(server.calls, ["get_run/503"])
+        self.assertEqual(run_ids(report), [503])
+        run = report.discovery.runs[0]
+        self.assertEqual((run.plan_id, run.plan_name), (901, None))
+        self.assertTrue(report.discovery.budget_exhausted)
+        self.assertFalse(report.discovery.complete)
+        self.assertTrue(any("parent plan 901" in note and "request budget" in note for note in report.limitations))
+        self.assertTrue(report.is_partial)
+
     def test_inaccessible_parent_plan_is_reported_but_run_is_kept(self):
         server = build_server()
         server.errors["get_plan/901"] = (403, "forbidden")
@@ -256,6 +269,29 @@ class SelectionCoverageTests(unittest.TestCase):
         self.assertFalse(any(h.is_verified_latest for h in report.histories))
         self.assertFalse(report.is_partial)
         self.assertTrue(any("targeted collection" in note for note in report.limitations))
+
+    def test_history_window_of_identified_keys_is_not_exhaustive(self):
+        report = collect(build_server(), settings(plan_ids=[900], history={"lookback_limit_days": 0}))
+        identified = [h for h in report.histories if h.key.is_identified]
+
+        self.assertTrue(identified)
+        for history in identified:
+            self.assertFalse(history.window_complete)
+            self.assertIn("history window may be incomplete: only the selected runs were scanned", history.coverage_notes)
+
+    def test_history_window_of_unidentified_keys_keeps_per_run_behaviour(self):
+        server = build_server()
+        server.plans[900][1][1]["config"] = "Unknown-Platform"  # run 502: platform unresolved
+        report = collect(server, settings(plan_ids=[900], history={"lookback_limit_days": 0}))
+        (unidentified,) = [h for h in report.histories if not h.key.is_identified]
+
+        self.assertEqual(unidentified.key.run_id, 502)
+        self.assertTrue(unidentified.window_complete)
+
+    def test_project_wide_window_completeness_is_unchanged(self):
+        report = collect(build_server(), fx.settings(history={"lookback_limit_days": 0}))
+
+        self.assertTrue(all(h.window_complete for h in report.histories))
 
     def test_selection_with_lookback_mentions_both_limits(self):
         report = collect(build_server(), settings(plan_ids=[900]))

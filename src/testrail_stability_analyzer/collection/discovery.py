@@ -133,7 +133,15 @@ class RunDiscovery:
                     continue
                 parent = None
                 if run.plan_id is not None:
-                    parent = known.get(run.plan_id) or self._parent_plan(run.plan_id, limitations)
+                    parent = known.get(run.plan_id)
+                    if parent is None:
+                        try:
+                            parent = self._parent_plan(run.plan_id, limitations)
+                        except TestRailRequestBudgetExceeded:
+                            # Keep the known run, as for an inaccessible parent; discovery stops here.
+                            limitations.append(_parent_note(run.plan_id, "request budget exhausted"))
+                            self._add(found, run, None, None)
+                            raise
                     if parent is not None:
                         known[run.plan_id] = parent
                 self._add(found, run, parent, None)
@@ -231,10 +239,7 @@ class RunDiscovery:
         except TestRailHTTPError as exc:
             if exc.status not in _INVALID_ID_REASONS:
                 raise
-            limitations.append(
-                f"parent plan {plan_id} of a selected run could not be fetched (HTTP {exc.status}); "
-                "plan-name mappings and patterns were not applied to that run"
-            )
+            limitations.append(_parent_note(plan_id, f"HTTP {exc.status}"))
             return None
 
     def _decision(self, run: Run, plan: Plan) -> RunDecision:
@@ -304,6 +309,13 @@ class RunDiscovery:
         if naming.run_name_patterns and not _matches_any(naming.run_name_patterns, run.name):
             return RunDecision.EXCLUDED_BY_NAME, "run name does not match naming.run_name_patterns"
         return _apply_filters(classification, self._settings.filters)
+
+
+def _parent_note(plan_id: int, cause: str) -> str:
+    return (
+        f"parent plan {plan_id} of a selected run could not be fetched ({cause}); "
+        "plan-name mappings and patterns were not applied to that run"
+    )
 
 
 def _newest_first(plan: Plan) -> tuple[bool, float, int]:

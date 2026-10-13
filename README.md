@@ -175,7 +175,8 @@ provider = credential_provider_from_settings(settings.credential_provider)
 - The analyzer only reads the item (`security find-generic-password … -w`);
   macOS may ask once to allow access. A missing item (exit status 44), a
   denied or cancelled prompt, or another platform raises `CredentialError`
-  without echoing tool output.
+  without echoing tool output. A configured `username_variable` is checked
+  before the Keychain is read, so a missing username never triggers a prompt.
 
 ### Endpoints
 
@@ -474,7 +475,13 @@ Set `collection.plan_ids` and/or `collection.run_ids` (or use the
   patterns, and filters still apply. Results are still fetched from the
   lookback start, so use `lookback_limit_days = 0` for old runs.
 - Histories are at best `selection_limited`: newer results may exist in runs
-  outside the selection.
+  outside the selection. For the same reason, `window_complete` is false for
+  identified case/application/platform keys (unselected runs may hold
+  executions in the window); unidentified keys consist of one run and are
+  unaffected.
+- If the request budget runs out while fetching a selected run's parent plan,
+  the run is kept without a plan name (as for an inaccessible parent) and
+  discovery is marked incomplete.
 
 ### Result-record limit
 

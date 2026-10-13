@@ -93,7 +93,9 @@ def build_histories(
         if capped:
             key_notes.append(f"result records of {capped} run(s) were cut by the result-record cap")
         coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited, selection_limited)
-        window_complete, window_notes = _window_completeness(group, gaps, window_start, discovery_complete)
+        window_complete, window_notes = _window_completeness(
+            group, gaps, window_start, discovery_complete, selection_limited
+        )
         histories.append(
             ExecutionHistory(
                 key=key,
@@ -185,11 +187,18 @@ def _coverage(
 
 
 def _window_completeness(
-    group: Group | None, gaps: Mapping[Group, Sequence[RunScan]], window_start: datetime, discovery_complete: bool
+    group: Group | None,
+    gaps: Mapping[Group, Sequence[RunScan]],
+    window_start: datetime,
+    discovery_complete: bool,
+    selection_limited: bool = False,
 ) -> tuple[bool, tuple[str, ...]]:
     if group is None:
         return True, ()  # unidentified keys consist of one fully scanned run
     notes = [] if discovery_complete else ["history window may be incomplete: run discovery was incomplete"]
+    if selection_limited:
+        # Unselected runs of the same application/platform may hold executions in the window.
+        notes.append("history window may be incomplete: only the selected runs were scanned")
     unscanned = [scan.run_id for scan in gaps.get(group, ()) if _may_hold_window_results(scan, window_start)]
     if unscanned:
         notes.append(

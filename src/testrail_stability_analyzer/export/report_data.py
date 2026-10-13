@@ -24,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Final
 
 from ..analysis.models import AnalysisReport, Confidence, Diagnosis, KeyAnalysis
+from ..collection.history import newest_first
 from ..collection.models import AvailabilityState, CaseGroup, CollectionReport, Coverage, RunOutcome
 from ..collection.outcomes import field_value
 from ..collection.sections import feature_group_label
@@ -225,7 +226,7 @@ def _case_columns(
 ) -> tuple[list[tuple[str, int]], list[tuple[int, list[Cell]]]]:
     """Shared case-level columns and, per case ID in ascending order, their cells."""
     class_field = settings.mappings.custom_fields.get("class_name")
-    groups = analysis.case_groups
+    groups = _report_groups(analysis, settings)
     columns: list[tuple[str, int]] = [("Test Case ID", 75)]
     if groups is not None:
         columns.append(("Feature / Test Group", 190))
@@ -250,12 +251,22 @@ def _case_columns(
     return columns, rows
 
 
+def _report_groups(analysis: AnalysisReport, settings: Settings) -> Mapping[int, CaseGroup] | None:
+    """Groups to report; ``None`` when not requested, also for an enriched analysis with the setting disabled."""
+    return analysis.case_groups if settings.report.feature_group.enabled else None
+
+
 def _newest_tests(outcomes: Iterable[RunOutcome]) -> dict[int, Test]:
-    """The test instance of each case from its newest run (highest run ID), for case-level fields."""
+    """The test instance of each case from its newest outcome, for case-level fields.
+
+    Ordered as histories are: by the final result's timestamp (ties: higher
+    run ID); outcomes without a final result only count when a case has none
+    with one, and then the highest run ID wins.
+    """
     newest: dict[int, RunOutcome] = {}
     for outcome in outcomes:
         current = newest.get(outcome.case_id)
-        if current is None or outcome.run_id > current.run_id:
+        if current is None or newest_first(outcome) > newest_first(current):
             newest[outcome.case_id] = outcome
     return {case_id: outcome.test for case_id, outcome in newest.items()}
 
@@ -385,7 +396,7 @@ def _info_sheet(
         ("Diagnoses", Cell(_counts(DIAGNOSIS_LABELS[a.diagnosis][0] for a in analysis.analyses))),
         ("Overview statuses (shown histories)", Cell(_counts(str(overview_cell(a).value) for a in shown))),
         ("Defect coverage", Cell(analysis.defect_coverage.value.replace("_", " "))),
-        ("Feature / Test Group", Cell(_group_summary(analysis.case_groups))),
+        ("Feature / Test Group", Cell(_group_summary(_report_groups(analysis, settings)))),
     ]
     limitations = list(dict.fromkeys([*analysis.limitations, *notes]))
     if len(shown) < len(analysis.analyses):

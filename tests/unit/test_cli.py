@@ -166,6 +166,18 @@ class ExitCodeTests(CliTestCase):
         self.assertEqual(code, cli.EXIT_API_ERROR)
         self.assertIn("none of the selected plans or runs could be collected", stderr)
 
+    def test_only_invalid_ids_write_no_report(self):
+        self.server.errors["get_run/999"] = (400, "Field :run_id is not a valid test run.")
+        report = self.config.parent / "report.xml"
+        code, stdout, stderr = self.run_cli("collect", "run", "999", "--xml-report", str(report))
+
+        self.assertEqual(code, cli.EXIT_API_ERROR)
+        self.assertIn("none of the selected plans or runs could be collected", stderr)
+        self.assertNotIn("report written", stdout)
+        self.assertFalse(report.exists())
+        metadata = ("get_sections/", "get_cases/", "get_suites/", "get_case_types")
+        self.assertEqual([call for call in self.server.calls if call.startswith(metadata)], [])
+
     def test_authentication_failure_is_an_api_error(self):
         self.server.errors["get_statuses"] = (401, "Authentication failed: invalid or missing user/password.")
         code, stdout, stderr = self.run_cli("collect", "plan", "900")
@@ -343,6 +355,21 @@ class XmlReportCommandTests(CliTestCase):
                 code, _, stderr = self.run_cli("collect", "plan", "900", "--xml-report", str(path))
                 self.assertEqual(code, cli.EXIT_INVALID_CONFIGURATION)
                 self.assertIn("invalid report path", stderr)
+        self.assertEqual(self.server.calls, [])
+
+    def test_same_report_file_via_another_path_is_rejected_before_requests(self):
+        link = self.config.parent / "link.xml"
+        link.symlink_to(self.report)
+        hard_link = self.config.parent / "hard.xml"
+        self.report.write_text("existing")
+        hard_link.hardlink_to(self.report)
+        for other in (self.report.absolute(), self.config.parent / "." / "report.xml", link, hard_link):
+            with self.subTest(other=other):
+                code, _, stderr = self.run_cli(
+                    "collect", "plan", "900", "--xml-report", str(self.report), "--xlsx-report", str(other)
+                )
+                self.assertEqual(code, cli.EXIT_INVALID_CONFIGURATION)
+                self.assertIn("--xml-report and --xlsx-report must be different files", stderr)
         self.assertEqual(self.server.calls, [])
 
 

@@ -7,9 +7,15 @@ grouping works for any project.
 
 Enrichment runs after collection and only adds :attr:`CollectionReport.case_groups`
 and limitations: histories, outcomes, and the collection's partial state are
-never changed, also when metadata cannot be fetched. Metadata is fetched once
-per distinct suite (``get_cases`` and ``get_sections``, both paginated), plus
+never changed, also when metadata cannot be fetched. Metadata is fetched at
+most once per suite (``get_cases`` and ``get_sections``, both paginated), plus
 one ``get_suites`` request when suite names are included in labels.
+
+The group is the case's *current* section. A case is looked up first in the
+suites of its own runs, newest first, then in the other suites of the report,
+so a case moved to another collected suite is still found; ``get_cases``
+returns current cases only, so the suite where it is found is authoritative.
+Sections are fetched only for suites where a case was found.
 """
 
 from __future__ import annotations
@@ -22,8 +28,9 @@ from types import MappingProxyType
 
 from ..api import TestRailClient, TestRailError, TestRailHTTPError, TestRailRequestBudgetExceeded
 from ..config.settings import FeatureGroupSettings, Settings
-from ..models import Section
+from ..models import Case, Section
 from .case_metadata import CaseMetadataCache
+from .history import newest_first
 from .models import CaseGroup, CollectionReport, FeatureGroupState
 
 
@@ -72,19 +79,22 @@ def enrich_feature_groups(
     report: CollectionReport, client: TestRailClient, settings: Settings, cache: CaseMetadataCache
 ) -> CollectionReport:
     """Return ``report`` with ``case_groups`` for every case that has a history."""
-    suites: dict[int, int | None] = {}
-    for outcome in report.outcomes:
-        suites.setdefault(outcome.case_id, outcome.source.run.suite_id or settings.testrail.suite_id)
-    case_ids = sorted({history.key.case_id for history in report.histories})
-    by_suite: dict[int | None, list[int]] = {}
-    for case_id in case_ids:
-        by_suite.setdefault(suites.get(case_id, settings.testrail.suite_id), []).append(case_id)
+    default_suite = settings.testrail.suite_id
+    own_suites: dict[int, list[int | None]] = {}
+    for outcome in sorted(report.outcomes, key=newest_first, reverse=True):
+        suites = own_suites.setdefault(outcome.case_id, [])
+        suite_id = outcome.source.run.suite_id or default_suite
+        if suite_id not in suites:
+            suites.append(suite_id)
+    report_suites = sorted({suite for suites in own_suites.values() for suite in suites}, key=lambda suite: suite or 0)
 
     session = _Enrichment(client, cache)
     suite_names = session.suite_names(settings) if settings.report.feature_group.include_suite_name else {}
     groups: dict[int, CaseGroup] = {}
-    for suite_id in sorted(by_suite, key=lambda suite: suite or 0):
-        groups.update(session.groups(suite_id, by_suite[suite_id], suite_names.get(suite_id)))
+    for case_id in sorted({history.key.case_id for history in report.histories}):
+        own = own_suites.get(case_id) or [default_suite]
+        candidates = [*own, *(suite for suite in report_suites if suite not in own)]
+        groups[case_id] = session.group(case_id, candidates, suite_names)
 
     limitations = list(report.limitations)
     limitations.extend(session.notes)
@@ -105,58 +115,75 @@ class _Enrichment:
         self.client = client
         self.cache = cache
         self.notes: list[str] = []
+        # Per suite: the fetched metadata, or the failure state (so a failed request is not repeated).
+        self._cases: dict[int | None, Mapping[int, Case] | FeatureGroupState] = {}
+        self._sections: dict[int | None, Mapping[int, Section] | FeatureGroupState] = {}
 
-    def _fetch[T](
-        self, fetch: Callable[[], T], what: str, consequence: str
-    ) -> tuple[T | None, FeatureGroupState | None]:
-        """(value, None) on success; (None, failure state) when the request failed. Never raises API errors."""
+    def _fetch[T](self, fetch: Callable[[], T], what: str, consequence: str) -> T | FeatureGroupState:
+        """The value on success; the failure state when the request failed. Never raises API errors."""
         try:
-            return fetch(), None
+            return fetch()
         except TestRailRequestBudgetExceeded:
             self.notes.append(f"{what} not fetched (request budget exhausted); {consequence}")
-            return None, FeatureGroupState.NOT_FETCHED
+            return FeatureGroupState.NOT_FETCHED
         except TestRailError as exc:
             # Response text can contain untrusted server content; report only the error type and status.
             status = f" HTTP {exc.status}" if isinstance(exc, TestRailHTTPError) and isinstance(exc.status, int) else ""
             self.notes.append(f"{what} could not be fetched ({type(exc).__name__}{status}); {consequence}")
-            return None, FeatureGroupState.INACCESSIBLE
+            return FeatureGroupState.INACCESSIBLE
 
     def suite_names(self, settings: Settings) -> dict[int | None, str]:
-        suites, _ = self._fetch(
+        suites = self._fetch(
             lambda: self.client.get_suites(settings.testrail.project_id), "suite names", "labels omit suite names"
         )
-        if suites is None:
+        if isinstance(suites, FeatureGroupState):
             return {}
         names: dict[int | None, str] = {suite.id: suite.name for suite in suites}
         if len(suites) == 1:
             names[None] = suites[0].name  # single-suite project collected without a suite ID
         return names
 
-    def groups(self, suite_id: int | None, case_ids: list[int], suite_name: str | None) -> dict[int, CaseGroup]:
-        label = "case metadata" if suite_id is None else f"case metadata of suite {suite_id}"
-        unknown = "Feature / Test Group is unknown for its cases"
-        cases, failure = self._fetch(lambda: self.cache.cases(suite_id), label, unknown)
-        sections: Mapping[int, Section] | None = None
-        if cases is not None:
+    def cases(self, suite_id: int | None) -> Mapping[int, Case] | FeatureGroupState:
+        if suite_id not in self._cases:
+            label = "case metadata" if suite_id is None else f"case metadata of suite {suite_id}"
+            unknown = "Feature / Test Group is unknown for its cases"
+            self._cases[suite_id] = self._fetch(lambda: self.cache.cases(suite_id), label, unknown)
+        return self._cases[suite_id]
+
+    def sections(self, suite_id: int | None) -> Mapping[int, Section] | FeatureGroupState:
+        if suite_id not in self._sections:
             label = "sections" if suite_id is None else f"sections of suite {suite_id}"
-            sections, failure = self._fetch(lambda: self.cache.sections(suite_id), label, unknown)
-        groups = {}
-        for case_id in case_ids:
-            if cases is None or sections is None:
-                assert failure is not None
-                groups[case_id] = CaseGroup(case_id, failure, suite_id=suite_id)
+            unknown = "Feature / Test Group is unknown for its cases"
+            self._sections[suite_id] = self._fetch(lambda: self.cache.sections(suite_id), label, unknown)
+        return self._sections[suite_id]
+
+    def group(
+        self, case_id: int, candidates: list[int | None], suite_names: Mapping[int | None, str]
+    ) -> CaseGroup:
+        """The group of a case, from the first candidate suite that contains it.
+
+        When no suite contains it, the state is the first fetch failure (the
+        case may be in a suite that could not be fetched), else ``case_not_found``.
+        """
+        failure: FeatureGroupState | None = None
+        for suite_id in candidates:
+            cases = self.cases(suite_id)
+            if isinstance(cases, FeatureGroupState):
+                failure = failure or cases
                 continue
             case = cases.get(case_id)
             if case is None:
-                groups[case_id] = CaseGroup(case_id, FeatureGroupState.CASE_NOT_FOUND, suite_id=suite_id)
                 continue
+            sections = self.sections(suite_id)
+            if isinstance(sections, FeatureGroupState):
+                return CaseGroup(case_id, sections, suite_id=suite_id)
             path = resolve_section_path(case.section_id, sections)
-            groups[case_id] = CaseGroup(
+            return CaseGroup(
                 case_id,
                 path.state,
                 suite_id=case.suite_id or suite_id,
                 section_id=case.section_id,
                 path=path.names,
-                suite_name=suite_name,
+                suite_name=suite_names.get(suite_id),
             )
-        return groups
+        return CaseGroup(case_id, failure or FeatureGroupState.CASE_NOT_FOUND, suite_id=candidates[0])

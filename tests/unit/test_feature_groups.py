@@ -168,6 +168,36 @@ class EnrichmentTests(unittest.TestCase):
         params = [p["suite_id"] for c, p in zip(server.calls, server.params, strict=True) if c.startswith("get_sec")]
         self.assertEqual(params, ["10", "20"])
 
+    def add_other_suite_run(self, server, case_id, created_days_ago):
+        server.add_run(
+            fx.run(3, "App-A Plat-X other suite", created=days_ago(created_days_ago), suite_id=20),
+            tests=[fx.test(30, case_id, 3)],
+            results=[fx.result(30, 30, PASSED, days_ago(created_days_ago - 1))],
+        )
+
+    def test_case_moved_to_a_suite_of_a_newer_run_shows_its_current_group(self):
+        server = build_server()
+        server.cases[10] = [payloads.case(101, section_id=5), payloads.case(103, section_id=99)]  # 100 moved away
+        server.cases[20] = [payloads.case(100, suite_id=20, section_id=50)]
+        server.sections[20] = [payloads.section(50, "New Area", suite_id=20)]
+        self.add_other_suite_run(server, 100, created_days_ago=2)  # newer than the suite 10 runs
+        _, report = enrich(server)
+        group = report.case_groups[100]
+        self.assertEqual((group.state, group.suite_id, group.path), (FeatureGroupState.RESOLVED, 20, ("New Area",)))
+        self.assertIs(report.case_groups[102].state, FeatureGroupState.CASE_NOT_FOUND)  # in no collected suite
+        self.assertEqual(calls(server, "get_cases/"), ["get_cases/1", "get_cases/1"])  # once per suite
+        params = [p["suite_id"] for c, p in zip(server.calls, server.params, strict=True) if c.startswith("get_sec")]
+        self.assertEqual(params, ["20", "10"])  # suite 20 first: 100's newest run is there
+
+    def test_case_moved_to_another_collected_suite_is_found_there(self):
+        server = build_server()
+        server.cases[10] = [payloads.case(101, section_id=5)]  # 100 is now in suite 20
+        server.cases[20] = [payloads.case(100, suite_id=20, section_id=50), payloads.case(300, suite_id=20)]
+        server.sections[20] = [payloads.section(50, "New Area", suite_id=20)]
+        self.add_other_suite_run(server, 300, created_days_ago=8)  # 100 itself never ran in suite 20
+        _, report = enrich(server)
+        self.assertEqual((report.case_groups[100].suite_id, report.case_groups[100].path), (20, ("New Area",)))
+
     def test_suite_names_cost_one_request(self):
         server = build_server()
         server.suites = [payloads.suite(id=10, name="Suite Ten"), payloads.suite(id=20, name="Suite Twenty")]
@@ -201,7 +231,11 @@ class EnrichmentTests(unittest.TestCase):
         server = build_server()
         server.errors["get_sections/1"] = (403, "Synthetic server text that must not be echoed")
         _, report = enrich(server)
-        self.assertTrue(all(g.state is FeatureGroupState.INACCESSIBLE for g in report.case_groups.values()))
+        states = {case_id: group.state for case_id, group in report.case_groups.items()}
+        inaccessible = FeatureGroupState.INACCESSIBLE
+        # 102 is in no suite, so its sections are not needed.
+        self.assertEqual(states, {100: inaccessible, 101: inaccessible, 102: FeatureGroupState.CASE_NOT_FOUND,
+                                  103: inaccessible})  # fmt: skip
         note = next(note for note in report.limitations if note.startswith("sections of suite 10"))
         self.assertIn("HTTP 403", note)
         self.assertNotIn("Synthetic server text", " ".join(report.limitations))

@@ -1,13 +1,21 @@
 """Shared report content: Overview statuses, comments, and Report Info additions. No openpyxl needed."""
 
+import dataclasses
 import re
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 
+from testrail_stability_analyzer.analysis import analyze
 from testrail_stability_analyzer.collection import Applicability
+from testrail_stability_analyzer.config import FeatureGroupSettings
 from testrail_stability_analyzer.export import build_report, render_spreadsheet
 
-from .report_fixtures import CASE_TYPES, sample_inputs
+from . import analysis_fixtures as af
+from .fake_testrail import PASSED
+from .report_fixtures import CASE_TYPES, _with_test, sample_inputs, sample_settings
+
+CLASS_NAME = MappingProxyType({"custom_class": "pkg.Newest"})
 
 SNAPSHOT = Path(__file__).parents[1] / "fixtures" / "xml_stability_worksheet.xml"
 
@@ -77,6 +85,46 @@ class OverviewTests(unittest.TestCase):
             keys = [line.split(":", 1)[0] for line in comment.splitlines()]
             self.assertIn(keys, (["Diagnosis", "Confidence", "Executions", "Pass rate", "Coverage", "Latest result"],
                                  ["No collected run of this application/platform included the case."]))  # fmt: skip
+
+
+class CaseColumnTests(unittest.TestCase):
+    def test_disabled_feature_groups_omit_the_column_of_an_enriched_analysis(self):
+        collection, analysis, settings = sample_inputs()
+        self.assertIsNotNone(analysis.case_groups)
+        disabled = dataclasses.replace(
+            settings, report=dataclasses.replace(settings.report, feature_group=FeatureGroupSettings(enabled=False))
+        )
+        report = build_report(collection, analysis, disabled, case_types=CASE_TYPES)
+        self.assertNotIn("Feature / Test Group", [name for name, _ in report.overview.columns])
+        self.assertNotIn("Feature / Test Group", [name for name, _ in report.details.columns])
+        info = {row[0].value: row[1].value for row in report.info.rows}
+        self.assertEqual(info["Feature / Test Group"], "not requested")
+
+    def case_fields(self, outcomes):
+        """(Class Name, Test Type) of case 100."""
+        settings = sample_settings()
+        collection = af.report(outcomes, hist=af.histories(outcomes))
+        sheet = build_report(collection, analyze(collection, settings), settings, case_types=CASE_TYPES).overview
+        headers = [name for name, _ in sheet.columns]
+        row = dict(zip(headers, sheet.rows[0], strict=True))
+        return row["Class Name"].value, row["Test Type"].value
+
+    def test_case_fields_come_from_the_newest_result_not_the_highest_run_id(self):
+        newest = _with_test([af.outcome(400, 100, af.rec(4000, PASSED, 1))], type_id=3, custom_fields=CLASS_NAME)
+        older = _with_test([af.outcome(900, 100, af.rec(9000, PASSED, 3))], type_id=1)
+        self.assertEqual(self.case_fields([*newest, *older]), ("pkg.Newest", "Functional"))
+
+    def test_equal_timestamps_prefer_the_higher_run_id(self):
+        low = _with_test([af.outcome(400, 100, af.rec(4000, PASSED, 1))], type_id=1)
+        high = _with_test([af.outcome(900, 100, af.rec(9000, PASSED, 1))], type_id=3)
+        self.assertEqual(self.case_fields([*high, *low]), (None, "Functional"))
+
+    def test_outcomes_without_a_dated_result_only_count_when_none_has_one(self):
+        dated = _with_test([af.outcome(400, 100, af.rec(4000, PASSED, 3))], type_id=3)
+        undated = _with_test([af.outcome(900, 100)], type_id=1)
+        self.assertEqual(self.case_fields([*undated, *dated]), (None, "Functional"))
+        only_undated = _with_test([af.outcome(901, 100)], type_id=1) + _with_test([af.outcome(900, 100)], type_id=3)
+        self.assertEqual(self.case_fields(only_undated), (None, "Automated"))
 
 
 class XmlCompatibilityTests(unittest.TestCase):

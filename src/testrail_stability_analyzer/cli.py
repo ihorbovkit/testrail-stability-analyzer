@@ -26,6 +26,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import dataclasses
+import os
 import sys
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
@@ -146,7 +147,7 @@ def main(
         err.write("invalid configuration:\n" + "".join(f"  - {problem}\n" for problem in exc.errors))
         return EXIT_INVALID_CONFIGURATION
     report_problem = _report_path_problem(args.xml_report) or _report_path_problem(args.xlsx_report)
-    if args.xml_report is not None and args.xml_report == args.xlsx_report:
+    if _same_file(args.xml_report, args.xlsx_report):
         report_problem = "--xml-report and --xlsx-report must be different files"
     if report_problem is not None:
         err.write(f"invalid report path: {report_problem}\n")
@@ -194,6 +195,14 @@ def _collect(
         plans = {sample.plan.id: sample.plan}
     cache = CaseMetadataCache(client, settings.testrail.project_id)
     report = HistoricalCollector(client, settings, resolver, clock=lambda: now, plans=plans, case_cache=cache).collect()
+    discovery = report.discovery
+    if discovery.invalid_selections and not discovery.included:
+        # No report is written: an empty one would look like a successful collection.
+        if sample is not None:
+            out.write(_sample_lines(sample, None))
+        out.write(format_summary(report, settings))
+        err.write("none of the selected plans or runs could be collected\n")
+        return EXIT_API_ERROR
     outputs: list[tuple[str, Path, bytes]] = []
     if args.xml_report is not None or args.xlsx_report is not None:
         # Metadata is fetched once and shared by both formats.
@@ -223,10 +232,6 @@ def _collect(
             err.write(f"could not write the {label} report: {exc.strerror or type(exc).__name__}\n")
             return EXIT_UNEXPECTED
         out.write(f"{label} report written: {path}\n")
-    discovery = report.discovery
-    if discovery.invalid_selections and not discovery.included:
-        err.write("none of the selected plans or runs could be collected\n")
-        return EXIT_API_ERROR
     return EXIT_PARTIAL if report.is_partial else EXIT_OK
 
 
@@ -239,6 +244,18 @@ def _report_path_problem(path: Path | None) -> str | None:
     if not path.parent.is_dir():
         return f"directory {path.parent} does not exist"
     return None
+
+
+def _same_file(first: Path | None, second: Path | None) -> bool:
+    """True when both paths name one file, also via relative paths, symlinks, or hard links."""
+    if first is None or second is None:
+        return False
+    if first.resolve() == second.resolve():
+        return True
+    try:
+        return first.exists() and second.exists() and os.path.samefile(first, second)
+    except OSError:
+        return False
 
 
 def _case_types(client: TestRailClient, notes: list[str]) -> dict[int, str] | None:

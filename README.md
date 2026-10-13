@@ -747,8 +747,11 @@ section names are assumed. The original names are kept as a tuple
 label.
 
 `get_tests` does not return `section_id`, so section metadata is fetched
-**only when a report is generated**, once per distinct suite of the collected
-runs:
+**only when a report is generated**, at most once per distinct suite of the
+collected runs. A case is looked up first in the suites of its own runs
+(newest first), then in the other collected suites, so a case moved between
+collected suites is shown under its current group; sections are fetched only
+for suites where a case was found:
 
 | Request | Count per suite |
 |---|---|
@@ -764,7 +767,7 @@ with a limitation:
 | State | Meaning |
 |---|---|
 | `resolved` | full path reconstructed |
-| `case_not_found` | the case is not returned by `get_cases` (deleted or moved to another suite) |
+| `case_not_found` | the case is not returned by `get_cases` for any collected suite (deleted, or moved to a suite not covered by the collected runs) |
 | `section_not_found` | the case has no section, or its section is not in the suite |
 | `broken_hierarchy` | a parent section is missing |
 | `cyclic_hierarchy` | parent links form a cycle |
@@ -845,7 +848,7 @@ unless `--xlsx-report` or `--xml-report` is given.
 | `1` | Unexpected error or interruption |
 | `2` | Invalid arguments or configuration, unusable report path, or `--xlsx-report` without `openpyxl` |
 | `3` | Partial collection: result-record cap, request budget, or some invalid IDs |
-| `4` | API or credential error, or no selected plan/run could be collected |
+| `4` | API or credential error, or no selected plan/run could be collected (no report is written) |
 | `5` | `collect sample` found no eligible plan |
 
 ## Security

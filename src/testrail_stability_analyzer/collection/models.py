@@ -6,6 +6,7 @@ timestamps) so that downstream analysis and reports remain auditable.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -295,6 +296,35 @@ class ResultConflict:
     result_id: int
 
 
+class FeatureGroupState(StrEnum):
+    """Whether a case's Feature / Test Group could be reconstructed from its section hierarchy."""
+
+    RESOLVED = "resolved"
+    CASE_NOT_FOUND = "case_not_found"  # not returned by get_cases (deleted, or moved to another suite)
+    SECTION_NOT_FOUND = "section_not_found"  # the case has no section, or it is not among the suite's sections
+    BROKEN_HIERARCHY = "broken_hierarchy"  # a parent section is missing
+    CYCLIC_HIERARCHY = "cyclic_hierarchy"  # parent links form a cycle
+    INACCESSIBLE = "inaccessible"  # a metadata request failed (e.g. HTTP 403)
+    NOT_FETCHED = "not_fetched"  # the request budget was exhausted before metadata was fetched
+
+
+@dataclass(frozen=True, slots=True)
+class CaseGroup:
+    """The section hierarchy of one case. ``path`` holds the original section names, top level first,
+    and is only set when ``state`` is ``resolved``."""
+
+    case_id: int
+    state: FeatureGroupState
+    suite_id: int | None = None
+    section_id: int | None = None
+    path: tuple[str, ...] = ()
+    suite_name: str | None = None  # only fetched when report.feature_group.include_suite_name is set
+
+    @property
+    def is_resolved(self) -> bool:
+        return self.state is FeatureGroupState.RESOLVED
+
+
 @dataclass(frozen=True, slots=True)
 class CollectionReport:
     collected_at: datetime
@@ -315,6 +345,8 @@ class CollectionReport:
     result_records_fetched: int = 0
     max_results: int | None = None  # configured result-record cap, if any
     results_capped: bool = False  # the cap was reached; further records were not retrieved
+    # Feature / Test Group per case ID; ``None`` when section metadata was not requested.
+    case_groups: Mapping[int, CaseGroup] | None = None
 
     @property
     def is_partial(self) -> bool:

@@ -11,6 +11,7 @@ import math
 import os
 import re
 import tomllib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -31,6 +32,7 @@ DEFAULT_MAX_REQUESTS_PER_EXECUTION: Final = 1000
 DEFAULT_MAX_RETRIES: Final = 3
 DEFAULT_RETRY_BACKOFF_SECONDS: Final = 1.0
 DEFAULT_MAX_RETRY_DELAY_SECONDS: Final = 60.0
+DEFAULT_FEATURE_GROUP_SEPARATOR: Final = "/"
 CREDENTIAL_PROVIDER_TYPES: Final = ("environment", "keychain")
 
 # Non-secret settings that may be overridden from the environment.
@@ -193,6 +195,26 @@ class CollectionSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class FeatureGroupSettings:
+    """Feature / Test Group of each case, reconstructed from its TestRail section hierarchy.
+
+    Section metadata is only fetched when a report is generated and ``enabled``
+    is true; collection on its own never fetches it.
+    """
+
+    enabled: bool = True
+    separator: str = DEFAULT_FEATURE_GROUP_SEPARATOR
+    # Section levels shown in the label, from the top; 0 shows the full hierarchy.
+    max_depth: int = 0
+    include_suite_name: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReportSettings:
+    feature_group: FeatureGroupSettings = FeatureGroupSettings()
+
+
+@dataclass(frozen=True, slots=True)
 class CredentialProviderSettings:
     """Which credential source to use. Holds names of secrets' locations, never secret values."""
 
@@ -214,6 +236,7 @@ class Settings:
     collection: CollectionSettings = CollectionSettings()
     credential_provider: CredentialProviderSettings = CredentialProviderSettings()
     analysis: AnalysisSettings = AnalysisSettings()
+    report: ReportSettings = ReportSettings()
 
 
 def load_settings(
@@ -288,6 +311,7 @@ class _Parser:
                 "collection",
                 "credential_provider",
                 "analysis",
+                "report",
             },
         )
 
@@ -367,6 +391,7 @@ class _Parser:
 
         collection = self._collection(data)
         credential_provider = self._credential_provider(data)
+        report = self._report(data)
 
         if self.errors:
             raise ConfigurationError(self.errors)
@@ -387,6 +412,7 @@ class _Parser:
             collection=collection,
             credential_provider=credential_provider,
             analysis=AnalysisSettings(min_executions),
+            report=report,
         )
 
     # -- collection and credential provider ---------------------------------
@@ -398,6 +424,33 @@ class _Parser:
             plan_ids=self._id_list(section, "plan_ids", "collection"),
             run_ids=self._id_list(section, "run_ids", "collection"),
             max_results=max_results or None,  # 0 means no cap.
+        )
+
+    def _report(self, data: Mapping[str, Any]) -> ReportSettings:
+        report = self._section(data, "report", {"feature_group"})
+        path = "report.feature_group"
+        group = report.get("feature_group", {})
+        if not isinstance(group, Mapping):
+            self.errors.append(f"{path} must be a table")
+            group = {}
+        self._check_keys(group, path, {"enabled", "separator", "max_depth", "include_suite_name"})
+        separator = group.get("separator", DEFAULT_FEATURE_GROUP_SEPARATOR)
+        # Not stripped: a separator such as " / " is kept as written. Category Cc is C0, DEL, and C1.
+        if (
+            not isinstance(separator, str)
+            or not separator
+            or any(unicodedata.category(char) == "Cc" for char in separator)
+        ):
+            self.errors.append(f"{path}.separator must be a non-empty string without control characters")
+            separator = DEFAULT_FEATURE_GROUP_SEPARATOR
+        max_depth = self._integer(group, "max_depth", path, default=0, minimum=0)
+        return ReportSettings(
+            FeatureGroupSettings(
+                enabled=self._boolean(group, "enabled", path, default=True),
+                separator=separator,
+                max_depth=max_depth if max_depth is not None else 0,
+                include_suite_name=self._boolean(group, "include_suite_name", path, default=False),
+            )
         )
 
     def _credential_provider(self, data: Mapping[str, Any]) -> CredentialProviderSettings:

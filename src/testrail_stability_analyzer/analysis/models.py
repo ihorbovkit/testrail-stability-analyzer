@@ -8,6 +8,7 @@ available for auditing.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
@@ -15,6 +16,7 @@ from enum import StrEnum
 from ..collection.models import (
     Applicability,
     AvailabilityState,
+    CaseGroup,
     Coverage,
     DimensionValue,
     ExecutionHistory,
@@ -222,6 +224,8 @@ class AnalysisReport:
     # run's tests, so their case is unknown and they are not aggregated.
     orphan_records_with_defects: int
     limitations: tuple[str, ...]
+    # Feature / Test Group per case ID, passed through from collection; ``None`` when not requested.
+    case_groups: Mapping[int, CaseGroup] | None = None
 
     def defects_for(self, case_id: int) -> CaseDefects | None:
         return next((defects for defects in self.case_defects if defects.case_id == case_id), None)

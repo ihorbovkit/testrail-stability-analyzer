@@ -1,4 +1,4 @@
-"""Project-level TestRail metadata: projects, suites, statuses, case types, custom fields."""
+"""Project-level TestRail metadata: projects, suites, sections, statuses, case types, custom fields."""
 
 from __future__ import annotations
 
@@ -64,6 +64,34 @@ class Suite:
             is_completed=f.boolean("is_completed"),
             completed_on=f.timestamp("completed_on"),
             url=f.string("url"),
+            extra=f.extra(),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class Section:
+    """A node of a suite's case hierarchy; ``parent_id`` is ``None`` for top-level sections."""
+
+    id: int
+    name: str
+    suite_id: int | None = None
+    parent_id: int | None = None
+    depth: int | None = None
+    display_order: int | None = None
+    description: str | None = None
+    extra: Mapping[str, Any] = _EMPTY
+
+    @classmethod
+    def from_api(cls, data: object) -> Self:
+        f = Fields(data, "section")
+        return cls(
+            id=f.id(),
+            name=f.required_string("name"),
+            suite_id=f.integer("suite_id"),
+            parent_id=f.integer("parent_id"),
+            depth=f.integer("depth"),
+            display_order=f.integer("display_order"),
+            description=f.string("description"),
             extra=f.extra(),
         )
 

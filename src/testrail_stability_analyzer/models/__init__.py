@@ -2,7 +2,7 @@
 
 from ._parse import ModelError
 from .execution import Case, Plan, PlanEntry, Result, Run, Test
-from .metadata import CaseField, CaseType, CustomField, CustomFieldConfig, Project, ResultField, Status, Suite
+from .metadata import CaseField, CaseType, CustomField, CustomFieldConfig, Project, ResultField, Section, Status, Suite
 from .statuses import SYSTEM_STATUS_CATEGORIES, ResolutionSource, ResolvedStatus, StatusResolver
 
 __all__ = [
@@ -20,6 +20,7 @@ __all__ = [
     "ResolvedStatus",
     "Result",
     "ResultField",
+    "Section",
     "Run",
     "Status",
     "StatusResolver",

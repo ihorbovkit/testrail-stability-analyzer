@@ -61,9 +61,12 @@ sources = ["configuration", "run_name"]
 #   application_version  result field holding the tested version (default: "version")
 #   applicability        case field listing the applications a case applies to;
 #                        set applicability_values on each application to use it
+#   class_name           case field holding the automated test's class name
+#                        (adds a Class Name column to XLSX and XML reports)
 [mappings.custom_fields]
 # application_version = "version"
 # applicability = "custom_target_applications"
+# class_name = "custom_class_name"
 
 # Analyzer category -> TestRail status system names or numeric IDs.
 # Categories: passed, failed, blocked, not_run, retest, not_applicable,
@@ -93,3 +96,15 @@ type = "environment"
 applications = []
 platforms = []
 execution_types = []
+
+# Feature / Test Group in reports, reconstructed from each case's TestRail
+# section hierarchy (e.g. "Top Section/Child Section"). Section metadata is
+# fetched only when a report is generated (--xlsx-report and/or --xml-report),
+# once per suite and shared by both formats.
+[report.feature_group]
+enabled = true
+separator = "/"
+# Section levels shown from the top; 0 shows the full hierarchy.
+max_depth = 0
+# Prefix labels with the suite name (one extra get_suites request).
+include_suite_name = false

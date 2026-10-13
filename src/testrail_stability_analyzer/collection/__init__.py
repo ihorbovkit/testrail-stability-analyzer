@@ -1,5 +1,6 @@
 """Historical execution collection from TestRail."""
 
+from .case_metadata import CaseMetadataCache
 from .classification import classify_run, match_dimension
 from .collector import HistoricalCollector
 from .discovery import RunDiscovery, SamplePlanSelection
@@ -7,6 +8,7 @@ from .history import build_histories, group_of, history_key
 from .models import (
     Applicability,
     AvailabilityState,
+    CaseGroup,
     CollectionReport,
     Coverage,
     DimensionState,
@@ -14,6 +16,7 @@ from .models import (
     DiscoveredRun,
     DiscoveryResult,
     ExecutionHistory,
+    FeatureGroupState,
     HistoryKey,
     InvalidSelection,
     ResolvedResult,
@@ -26,10 +29,13 @@ from .models import (
 )
 from .outcomes import build_outcome, deduplicate, select_final, sort_chronologically
 from .sanitize import sanitize_comment
+from .sections import SectionPath, enrich_feature_groups, feature_group_label, resolve_section_path
 
 __all__ = [
     "Applicability",
     "AvailabilityState",
+    "CaseGroup",
+    "CaseMetadataCache",
     "CollectionReport",
     "Coverage",
     "DimensionState",
@@ -37,6 +43,7 @@ __all__ = [
     "DiscoveredRun",
     "DiscoveryResult",
     "ExecutionHistory",
+    "FeatureGroupState",
     "HistoricalCollector",
     "HistoryKey",
     "InvalidSelection",
@@ -48,14 +55,18 @@ __all__ = [
     "RunOutcome",
     "RunScan",
     "SamplePlanSelection",
+    "SectionPath",
     "SelectionKind",
     "build_histories",
     "build_outcome",
     "classify_run",
     "deduplicate",
+    "enrich_feature_groups",
+    "feature_group_label",
     "group_of",
     "history_key",
     "match_dimension",
+    "resolve_section_path",
     "sanitize_comment",
     "select_final",
     "sort_chronologically",

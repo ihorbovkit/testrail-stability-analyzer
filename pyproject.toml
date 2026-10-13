@@ -13,8 +13,12 @@ classifiers = [
     "Topic :: Software Development :: Testing",
     "Typing :: Typed",
 ]
-# Runtime uses the standard library only.
+# Collection, analysis, and XML reports use the standard library only.
 dependencies = []
+
+[project.optional-dependencies]
+# Native XLSX reports (--xlsx-report); imported lazily, so XML reports work without it.
+xlsx = ["openpyxl>=3.1,<4"]
 
 [project.scripts]
 testrail-stability-analyzer = "testrail_stability_analyzer.cli:run"
@@ -24,6 +28,7 @@ packages = [{ include = "testrail_stability_analyzer", from = "src" }]
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8.3"
+openpyxl = ">=3.1,<4"
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

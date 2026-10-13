@@ -32,6 +32,19 @@ def suite(**overrides):
     }
 
 
+def section(id, name, parent_id=None, **overrides):
+    return {
+        "id": id,
+        "suite_id": 10,
+        "name": name,
+        "description": None,
+        "parent_id": parent_id,
+        "display_order": id,
+        "depth": 0 if parent_id is None else 1,
+        **overrides,
+    }
+
+
 def status(id, name, label, *, is_system=True, is_untested=False, is_final=True):
     return {
         "id": id,

@@ -321,6 +321,33 @@ class MappingTests(unittest.TestCase):
             self.assertNotIn("supersecret", str(ctx.exception))
 
 
+class ReportSettingsTests(unittest.TestCase):
+    def test_feature_group_defaults(self):
+        group = settings_from_mapping(minimal()).report.feature_group
+        self.assertEqual((group.enabled, group.separator, group.max_depth, group.include_suite_name), (True, "/", 0, False))
+
+    def test_feature_group_values(self):
+        data = {"feature_group": {"enabled": False, "separator": " / ", "max_depth": 2, "include_suite_name": True}}
+        group = settings_from_mapping(minimal(report=data)).report.feature_group
+        self.assertEqual((group.enabled, group.separator, group.max_depth, group.include_suite_name), (False, " / ", 2, True))
+
+    def test_invalid_feature_group_values(self):
+        for group, message in (
+            ({"separator": ""}, "report.feature_group.separator"),
+            ({"separator": "\n"}, "report.feature_group.separator"),
+            ({"separator": "\x7f"}, "report.feature_group.separator"),
+            ({"separator": " \x85 "}, "report.feature_group.separator"),
+            ({"max_depth": -1}, "report.feature_group.max_depth must be >= 0"),
+            ({"enabled": "yes"}, "report.feature_group.enabled must be true or false"),
+            ({"group_by": "plan"}, "report.feature_group.group_by: unknown setting"),
+        ):
+            with self.subTest(group=group), self.assertRaises(ConfigurationError) as ctx:
+                settings_from_mapping(minimal(report={"feature_group": group}))
+            self.assertTrue(any(message in error for error in ctx.exception.errors), ctx.exception.errors)
+        with self.assertRaises(ConfigurationError):
+            settings_from_mapping(minimal(report={"feature_group": "section"}))
+
+
 class LoadSettingsTests(unittest.TestCase):
     def write_config(self, content):
         directory = tempfile.TemporaryDirectory()
@@ -335,6 +362,7 @@ class LoadSettingsTests(unittest.TestCase):
         self.assertEqual(settings.history.window_days, 60)
         self.assertEqual(settings.history.lookback_limit_days, 365)
         self.assertFalse(settings.filters.enabled)
+        self.assertTrue(settings.report.feature_group.enabled)
 
     def test_environment_only(self):
         settings = load_settings(environ={"TESTRAIL_BASE_URL": "https://env.example", "TESTRAIL_PROJECT_ID": "4"})

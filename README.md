@@ -4,12 +4,13 @@ A reusable, read-only Python application for analyzing test stability in any
 TestRail instance. It is not tied to a specific customer, project, automation
 framework, or TestRail configuration.
 
-> **Status: Milestone 3.1 (targeted collection, Keychain authentication,
-> CLI).** Configuration, credential handling (environment variables or macOS
-> Keychain), a read-only API client, status resolution, a historical
-> execution collector with targeted plan/run selection and a result-record
-> cap, and a command-line interface are implemented. Stability/flakiness
-> metrics and report export are **not** implemented yet. See
+> **Status: Milestone 6.1 (XLSX and XML reports).** Configuration,
+> credential handling (environment variables or macOS Keychain), a read-only
+> API client, status resolution, a historical execution collector with
+> targeted plan/run selection and a result-record cap, stability analysis,
+> a command-line interface, and native XLSX and Excel-compatible XML
+> Spreadsheet 2003 reports with section-based Feature / Test Groups are
+> implemented. JSON export is **not** implemented yet. See
 > [Implementation status](#implementation-status).
 
 ## Purpose
@@ -30,15 +31,24 @@ exported as XML, JSON, and Excel.
 - [Poetry](https://python-poetry.org/) 2.x for dependency management (optional
   for running unit tests)
 
-The runtime has **no third-party dependencies**; it uses only the standard
-library. `pytest` is declared as an optional development dependency.
+Collection, analysis, and XML reports use **only the standard library**.
+Native XLSX reports need the optional `openpyxl` package (extra `xlsx`).
+`pytest` and `openpyxl` are declared as development dependencies.
 
 ## Installation
 
 ```bash
 # Creates a project-local .venv/ (see poetry.toml) and installs dev dependencies.
 poetry install
+# Runtime only, with XLSX support:
+poetry install --only main --extras xlsx
+# Or into an existing virtual environment:
+pip install "openpyxl>=3.1,<4"
 ```
+
+`openpyxl` is imported only when an XLSX report is written. Without it,
+`--xlsx-report` stops with an installation hint before any TestRail request;
+everything else works unchanged.
 
 ## Running unit tests
 
@@ -99,13 +109,17 @@ settings = load_settings("config/local/config.toml")
 | `mappings.applications` / `mappings.platforms` / `mappings.execution_types` | `[]` | — |
 | `mappings.applications[].applicability_values` | `[]` | — |
 | `filters.applications` / `filters.platforms` / `filters.execution_types` | `[]` (include all) | — |
-| `mappings.custom_fields` | `{}` | — |
+| `mappings.custom_fields` (logical names: `application_version`, `applicability`, `class_name`) | `{}` | — |
 | `mappings.statuses` | `{}` | — |
 | `collection.plan_ids` / `collection.run_ids` (targeted collection) | `[]` (project-wide) | — |
 | `collection.max_results` (result-record cap; `0` = no cap) | `0` | `TESTRAIL_MAX_RESULTS` |
 | `credential_provider.type` (`environment` or `keychain`) | `environment` | `TESTRAIL_CREDENTIAL_PROVIDER` |
 | `credential_provider.keychain_service` / `keychain_account` | none (required for `keychain`) | `TESTRAIL_KEYCHAIN_SERVICE` / `TESTRAIL_KEYCHAIN_ACCOUNT` |
 | `credential_provider.username_variable` (environment variable holding the username) | none | — |
+| `report.feature_group.enabled` (fetch section metadata when a report is generated) | `true` | — |
+| `report.feature_group.separator` | `"/"` | — |
+| `report.feature_group.max_depth` (section levels from the top; `0` = full hierarchy) | `0` | — |
+| `report.feature_group.include_suite_name` (one extra `get_suites` request) | `false` | — |
 
 ### Configuration principles
 
@@ -187,6 +201,7 @@ All methods issue HTTP GET only and return typed models (`testrail_stability_ana
 |---|---|---|---|
 | `get_project(project_id)` | `get_project` | `Project` | — |
 | `get_suites(project_id)` | `get_suites` | `list[Suite]` | — |
+| `get_sections(project_id, ...)` | `get_sections` | `Iterator[Section]` | `suite_id` |
 | `get_cases(project_id, ...)` | `get_cases` | `Iterator[Case]` | `suite_id`, `section_id`, `created_after/before/by`, `updated_after/before/by`, `milestone_id`, `priority_id`, `template_id`, `type_id` |
 | `get_case_fields()` | `get_case_fields` | `list[CustomField]` | — |
 | `get_case_types()` | `get_case_types` | `list[CaseType]` | — |
@@ -645,11 +660,159 @@ object is attached to every analysis of the case.
   count is reported in `orphan_records_with_defects` and the limitations,
   without downgrading every case.
 
+## Reports
+
+Two formats are built from the same content and can be written in one run
+(`--xlsx-report` and `--xml-report` together fetch the metadata only once):
+
+| | XLSX (`--xlsx-report PATH`) | XML (`--xml-report PATH`) |
+|---|---|---|
+| Format | native Office Open XML workbook | XML Spreadsheet 2003 (SpreadsheetML) |
+| Dependency | `openpyxl` (optional extra) | standard library only |
+| Opens in | Excel, Google Sheets, LibreOffice, Google Drive preview | Excel, LibreOffice (Google Drive shows raw XML) |
+| Worksheets | Stability Overview, Stability Details, Report Info | Stability (= Stability Details), Report Info |
+| Overview notes, text wrapping | yes | no |
+
+Both have frozen header rows, AutoFilter, set column widths, numeric
+percentage and date cells (UTC), and the colours below.
+
+**`Stability Overview`** (XLSX only, first worksheet): one row per Test Case
+ID with the case columns below and **one compact column per application ×
+platform** combination (header `<application> <platform>`). Each cell shows
+the latest status of that combination, or a state:
+
+| Cell | When |
+|---|---|
+| No History | the case was not in any collected run of the combination |
+| Not Applicable | diagnosis or latest status is not applicable |
+| Partial | collection was incomplete for the combination |
+| Applicability Unresolved | not executed, and applicability metadata is missing |
+| Not Run | no execution, or none within the history window |
+| Passed, Failed, Blocked, Automation Issue, Retest, Unknown Status | otherwise: the latest known status, also when history is insufficient |
+
+Colour follows the shown status (green Passed, red Failed, yellow Automation
+Issue, grey otherwise); an `Inconsistent` diagnosis turns the cell yellow
+while keeping the status. **Green Passed means the latest result passed, not
+that stability is confirmed**: the cell's note shows the diagnosis,
+confidence, executions, pass rate, coverage, and latest result date.
+
+**`Stability Details`** (the XML `Stability` worksheet): one row per Test Case
+ID, sorted by ID.
+
+| Column | Source |
+|---|---|
+| Test Case ID | TestRail case ID |
+| Feature / Test Group | the case's section hierarchy (see below); omitted when `report.feature_group.enabled = false` |
+| Class Name | `mappings.custom_fields.class_name`, read from the case's newest test instance; omitted when not configured |
+| Test Type | case type name (`get_case_types`, one request); the type ID if it cannot be fetched |
+| Defects | defect IDs shared across all applications/platforms (see [Case-level defect aggregation](#case-level-defect-aggregation)) |
+
+Then, for every configured application × platform combination (limited by
+`filters.*` when set), in configuration order: Latest Status, Latest Result
+(UTC), Executions, Pass Rate, Failure Rate, Automation Issue Rate, Diagnosis,
+Confidence, and Coverage. Each combination is analyzed independently.
+`No History` means the case was not in any collected run of that
+combination. Histories of runs with an unidentified application or platform
+cannot be placed in a combination column; they are counted in `Report Info`.
+
+| Colour | Diagnosis / latest status |
+|---|---|
+| Green | Stable / Passed |
+| Yellow | Inconsistent, Automation Issue / Automation Issue |
+| Red | Failure Evidence, Failure + Automation Issue / Failed. Failed executions do **not** confirm an application defect. |
+| Neutral | N/A, Not Run, Not Run in Window, Insufficient History, Partial, Applicability Unresolved, No History |
+
+**`Report Info` worksheet**: project ID, collection mode and selection,
+window and lookback, collection status (OK/PARTIAL), API requests, case and
+combination counts, coverage, diagnosis, and Overview status counts, explicit
+notes for selection-limited, lookback-limited, and partial coverage, defect
+coverage, Feature / Test Group summary, every limitation, and a legend
+(colours, Overview, confidence levels).
+
+### Google Sheets
+
+Upload the `.xlsx` to Google Drive and open it with Google Sheets. Values,
+colours, number formats, frozen rows, and filters are kept; cell notes appear
+as notes (hover the cell). Column widths are approximate. The XML format is
+not supported by Google Sheets.
+
+### Feature / Test Group
+
+The group is reconstructed generically from TestRail sections: the case's
+`section_id` is followed through `parent_id` links up to the top-level
+section, and the names are joined top level first with
+`report.feature_group.separator` (e.g. `Top Section/Child Section`). No
+section names are assumed. The original names are kept as a tuple
+(`CaseGroup.path`); a name that contains the separator is not escaped in the
+label.
+
+`get_tests` does not return `section_id`, so section metadata is fetched
+**only when a report is generated**, at most once per distinct suite of the
+collected runs. A case is looked up first in the suites of its own runs
+(newest first), then in the other collected suites, so a case moved between
+collected suites is shown under its current group; sections are fetched only
+for suites where a case was found:
+
+| Request | Count per suite |
+|---|---|
+| `get_cases` (shared with the applicability fallback; never requested twice) | ⌈cases / 250⌉ pages |
+| `get_sections` | ⌈sections / 250⌉ pages |
+| `get_suites` (only with `include_suite_name`) | 1 per report |
+
+Collection without a report option makes none of these requests. Metadata is
+fetched after collection, so an exhausted request budget or a failed request
+never changes stability results; the affected groups are reported as unknown,
+with a limitation:
+
+| State | Meaning |
+|---|---|
+| `resolved` | full path reconstructed |
+| `case_not_found` | the case is not returned by `get_cases` for any collected suite (deleted, or moved to a suite not covered by the collected runs) |
+| `section_not_found` | the case has no section, or its section is not in the suite |
+| `broken_hierarchy` | a parent section is missing |
+| `cyclic_hierarchy` | parent links form a cycle |
+| `inaccessible` | a metadata request failed (e.g. HTTP 403) |
+| `not_fetched` | the request budget was exhausted |
+
+### Report safety
+
+Reports contain only these fields:
+
+- **Case columns:** Test Case ID, Feature / Test Group (section names), Class
+  Name (the raw value of the configured custom field), Test Type, and Defects
+  (defect IDs as entered in results).
+- **Combination columns:** analyzed values only (latest status and date,
+  execution count, rates, diagnosis, confidence, coverage).
+- **Report Info:** project, suite, selected plan and run IDs, collection
+  settings and counts, limitations, and the legend.
+
+Result comments, case steps and other case content, plan and run names,
+session IDs, the TestRail base URL, and credentials are never written.
+
+Text fields copied from TestRail (section names, Class Name, defect IDs) are
+exported as entered: if they contain URL text, that text appears in the
+report as plain text. The exporter never creates hyperlinks, external links,
+or links to TestRail or defect trackers; XLSX values are stored as text
+cells, never formulas.
+
+Every string is stripped of characters XML cannot carry, escaped, truncated
+to Excel's 32,767-character cell limit, and prefixed with `'` when it starts
+with `=`, `+`, `-`, `@`, tab, or carriage return, so spreadsheets do not
+evaluate it as a formula (identically in both formats; defect IDs are
+otherwise kept exactly as entered). Reports contain customer data such as
+section names and defect IDs: write them outside the repository or to a
+git-ignored directory (`reports/`, `output/`).
+
 ## Command-line interface
 
 ```bash
 # With Poetry: poetry run testrail-stability-analyzer ...
 PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml
+PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml \
+    --xlsx-report reports/stability.xlsx
+# Both formats in one run (metadata is fetched once):
+PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml \
+    --xlsx-report reports/stability.xlsx --xml-report reports/stability.xml
 ```
 
 | Command | Collects |
@@ -670,6 +833,8 @@ are validated like the file):
 | `--max-results N` | `collection.max_results` (`0` = no cap) |
 | `--max-requests N` | `http.max_requests_per_execution` |
 | `--window-days N` / `--lookback-days N` | `history.window_days` / `history.lookback_limit_days` |
+| `--xlsx-report PATH` | also write the [XLSX report](#reports) (needs `openpyxl`); the directory must exist |
+| `--xml-report PATH` | also write the [XML report](#reports); the directory must exist |
 
 The command-line selection replaces `collection.plan_ids`/`run_ids` from the
 configuration file. Secrets cannot be passed as arguments.
@@ -687,17 +852,18 @@ application/platform/execution type (configured mapping names or state),
 unresolved classifications, test instances, result records (status-bearing,
 comment-only, with comments, with linked defects), final outcomes (verified
 or from capped streams), status categories, grouping, coverage, states, API
-requests, and limitations. Plan and run names, comment text, defect
-identifiers, URLs, and credentials are never printed, and no files are
-written.
+requests, and limitations (with a report option, also Feature / Test Group
+counts). Plan and run names, section names, comment text, defect
+identifiers, URLs, and credentials are never printed. No files are written
+unless `--xlsx-report` or `--xml-report` is given.
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Collection complete (within its selection and lookback) |
 | `1` | Unexpected error or interruption |
-| `2` | Invalid arguments or configuration |
+| `2` | Invalid arguments or configuration, unusable report path, or `--xlsx-report` without `openpyxl` |
 | `3` | Partial collection: result-record cap, request budget, or some invalid IDs |
-| `4` | API or credential error, or no selected plan/run could be collected |
+| `4` | API or credential error, or no selected plan/run could be collected (no report is written) |
 | `5` | `collect sample` found no eligible plan |
 
 ## Security
@@ -713,6 +879,7 @@ written.
   item (read-only; the secret is read from the tool's output, never passed as
   an argument, and tool output is never included in errors). Other sources
   can be added by implementing the same interface.
+- XLSX and XML reports contain only analyzed values (see [Report safety](#report-safety)).
 - The CLI prints only counts, IDs, mapping names, and status categories. API
   errors are reported by exception type and HTTP status only; TestRail's
   response text is never printed.
@@ -737,10 +904,12 @@ src/testrail_stability_analyzer/
 ├── api/         client.py (read-only client), transport.py (HTTP), errors.py
 ├── models/      metadata.py, execution.py (typed entities), statuses.py (status resolution)
 ├── collection/  discovery.py, classification.py, outcomes.py, history.py,
-│                collector.py, sanitize.py (historical execution collection)
+│                collector.py, sanitize.py, case_metadata.py, sections.py
+│                (historical execution collection, Feature / Test Groups)
 ├── analysis/    metrics.py, classification.py, defects.py, analyzer.py
 │                (stability analysis and case-level defect aggregation)
-└── export/      planned: XML / JSON / Excel reports
+└── export/      report_data.py (shared report content), xlsx.py (XLSX, optional openpyxl),
+                 spreadsheet.py (Excel-compatible XML Spreadsheet 2003)
 config/config.example.toml
 tests/unit/          mocked unit tests
 tests/integration/   reserved for opt-in live tests
@@ -754,7 +923,7 @@ tests/integration/   reserved for opt-in live tests
 - Typed, validated settings from TOML and environment variables.
 - Credential-provider interface with an environment-variable implementation.
 - Read-only API client:
-  - typed methods for 14 read-only endpoints (see [Endpoints](#endpoints)),
+  - typed methods for 15 read-only endpoints (see [Endpoints](#endpoints)),
   - bounded retries for rate limits, temporary server errors, and network failures,
   - URL construction for `index.php?/api/v2/...` endpoints and query parameters,
   - injectable HTTP transport (standard-library `http.client` by default) with
@@ -783,10 +952,17 @@ tests/integration/   reserved for opt-in live tests
   deterministic diagnosis and confidence, and coverage limitations.
 - Case-level defect aggregation across applications, platforms, retries,
   and triage records, with provenance.
+- Native XLSX report (`--xlsx-report`, optional `openpyxl`) with a compact
+  Stability Overview, Stability Details, and Report Info.
+- Excel-compatible XML Spreadsheet 2003 report (`--xml-report`) with dynamic
+  application/platform columns, colour coding, report-level coverage and
+  limitations, and formula-injection protection.
+- Feature / Test Group per case from the TestRail section hierarchy
+  (`get_sections`), fetched once per suite only for reports.
 
 ### Not implemented yet
 
-- XML, JSON, and Excel export, and analysis output in the CLI.
+- JSON export, and analysis output in the CLI summary.
 - Live integration tests.
 - Credential providers other than environment variables and macOS Keychain.
 
@@ -832,4 +1008,16 @@ tests/integration/   reserved for opt-in live tests
   `is_completed` filters; their boundary-second semantics are handled by
   overlapping queries.
 - Custom field values (e.g. dropdown IDs) are not decoded; applicability
-  values are matched as configured.
+  values are matched as configured, and Class Name shows the raw value.
+- Feature / Test Group is the case's **current** section at report time; for
+  a case moved since, older executions are shown under its new group.
+- In reports, histories with an unidentified application or platform, or
+  with one outside the configured filters, are only counted in `Report Info`
+  (separately), not shown in combination columns.
+- The Overview colour follows the latest status, except for `Inconsistent`
+  (yellow). A history diagnosed `automation_issue_evidence` whose latest
+  result passed shows a green Passed; its note and Stability Details show the
+  diagnosis.
+- A defect ID that starts with `=`, `+`, `-`, or `@` and is the first in its
+  cell is shown with a leading `'` (formula-injection protection).
+- XLSX column widths are approximations of the shared point widths.

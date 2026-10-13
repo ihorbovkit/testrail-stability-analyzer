@@ -3,7 +3,9 @@ import unittest
 
 from testrail_stability_analyzer.collection import (
     Applicability,
+    ApplicabilityValueState,
     AvailabilityState,
+    CaseApplicability,
     Coverage,
     DimensionState,
     HistoricalCollector,
@@ -432,7 +434,7 @@ class MissingStateTests(unittest.TestCase):
             mappings={
                 "applications": [
                     {"name": "App A", "patterns": ["(?i)app-a"], "applicability_values": ["A"]},
-                    {"name": "App B", "patterns": ["(?i)app-b"]},
+                    {"name": "App B", "patterns": ["(?i)app-b"], "applicability_values": ["B"]},
                 ],
                 "custom_fields": {"applicability": "custom_apps"},
             }
@@ -480,6 +482,7 @@ class MissingStateTests(unittest.TestCase):
             self.assertIn("applicability metadata could not be fetched (request budget)", h.coverage_notes)
             self.assertEqual(h.applicability, Applicability.UNKNOWN)
         self.assertEqual(history(report, 100, "App A", "Platform Y").state, AvailabilityState.UNKNOWN_APPLICABILITY)
+        self.assertEqual(report.case_applicability[100], CaseApplicability(ApplicabilityValueState.NOT_FETCHED))
 
     def test_applicability_falls_back_to_bulk_cases_once_per_suite(self):
         server = FakeTestRail()
@@ -494,6 +497,57 @@ class MissingStateTests(unittest.TestCase):
         self.assertEqual(sum(call.startswith("get_cases/") for call in server.calls), 1)
         self.assertEqual(history(report, 100, "App A", "Platform Y").state, AvailabilityState.NOT_APPLICABLE)
         self.assertEqual(history(report, 101, "App A", "Platform Y").applicability, Applicability.APPLICABLE)
+
+    def test_unmapped_or_unset_values_never_establish_exclusion(self):
+        server = FakeTestRail()
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[
+                fx.test(1, 100, 1, status_id=PASSED, custom_apps=["Z"]),  # listed by no application
+                fx.test(2, 101, 1, status_id=PASSED, custom_apps=["B", "Z"]),  # partly unmapped
+                fx.test(3, 102, 1, status_id=PASSED, custom_apps=[]),
+                fx.test(4, 103, 1, status_id=PASSED, custom_apps=[" A ", 7]),
+            ],
+            results=[fx.result(i, i, PASSED, days_ago(4)) for i in range(1, 5)],
+        )
+        server.add_run(fx.run(2, "App-A Plat-Y", created=days_ago(5)), tests=[], results=[])
+        report = collect(server, self.applicability_settings())
+        for case_id in (100, 101, 102):
+            with self.subTest(case_id=case_id):
+                h = history(report, case_id, "App A", "Platform Y")
+                self.assertEqual(h.state, AvailabilityState.UNKNOWN_APPLICABILITY)
+                self.assertEqual(h.applicability, Applicability.UNKNOWN)
+        self.assertEqual(history(report, 103, "App A", "Platform Y").applicability, Applicability.APPLICABLE)
+
+    def test_case_applicability_values_are_kept_on_the_report(self):
+        server = FakeTestRail()
+        server.cases[10] = [fx.payloads.case(101, custom_apps=[2]), fx.payloads.case(102)]
+        server.add_run(
+            fx.run(1, "App-A Plat-X", created=days_ago(5)),
+            tests=[
+                fx.test(1, 100, 1, custom_apps=["A", "B"]),
+                fx.test(2, 101, 1),
+                fx.test(3, 102, 1),
+                fx.test(4, 103, 1),
+            ],
+            results=[],
+        )
+        report = collect(server, self.applicability_settings())
+        read, missing = ApplicabilityValueState.READ, ApplicabilityValueState.CASE_NOT_FOUND
+        self.assertEqual(
+            dict(report.case_applicability),
+            {
+                100: CaseApplicability(read, ("A", "B")),
+                101: CaseApplicability(read, ("2",)),  # from the get_cases fallback
+                102: CaseApplicability(read, ()),  # the case has no value
+                103: CaseApplicability(missing),  # not returned by get_cases
+            },
+        )
+
+    def test_case_applicability_is_absent_when_not_configured(self):
+        server = FakeTestRail()
+        server.add_run(fx.run(1, "App-A Plat-X"), tests=[fx.test(1, 100, 1, custom_apps=["A"])], results=[])
+        self.assertIsNone(collect(server).case_applicability)
 
 
 class UnidentifiedAndFilteredRunTests(unittest.TestCase):

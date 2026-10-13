@@ -347,6 +347,26 @@ class ReportSettingsTests(unittest.TestCase):
         with self.assertRaises(ConfigurationError):
             settings_from_mapping(minimal(report={"feature_group": "section"}))
 
+    def test_applicability_all_label(self):
+        self.assertIsNone(settings_from_mapping(minimal()).report.applicability.all_label)
+        fields = {"custom_fields": {"applicability": "custom_apps"}}
+        data = minimal(mappings=fields, report={"applicability": {"all_label": " Both "}})
+        self.assertEqual(settings_from_mapping(data).report.applicability.all_label, "Both")
+
+    def test_invalid_applicability_settings(self):
+        fields = {"custom_fields": {"applicability": "custom_apps"}}
+        for section, mappings, message in (
+            ({"all_label": ""}, fields, "report.applicability.all_label must be a non-empty string"),
+            ({"all_label": "A\nB"}, fields, "report.applicability.all_label must be a non-empty string"),
+            ({"all_label": 1}, fields, "report.applicability.all_label must be a non-empty string"),
+            ({"label": "Both"}, fields, "report.applicability.label: unknown setting"),
+            ({"all_label": "Both"}, {}, "report.applicability.all_label requires mappings.custom_fields.applicability"),
+            ("Both", fields, "report.applicability must be a table"),
+        ):
+            with self.subTest(section=section), self.assertRaises(ConfigurationError) as ctx:
+                settings_from_mapping(minimal(mappings=mappings, report={"applicability": section}))
+            self.assertTrue(any(message in error for error in ctx.exception.errors), ctx.exception.errors)
+
 
 class LoadSettingsTests(unittest.TestCase):
     def write_config(self, content):

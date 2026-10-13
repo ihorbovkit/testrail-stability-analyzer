@@ -120,6 +120,10 @@ settings = load_settings("config/local/config.toml")
 | `report.feature_group.separator` | `"/"` | — |
 | `report.feature_group.max_depth` (section levels from the top; `0` = full hierarchy) | `0` | — |
 | `report.feature_group.include_suite_name` (one extra `get_suites` request) | `false` | — |
+| `report.blocked_reason.enabled` (Blocked Reason column and Overview note line) | `true` | — |
+| `report.blocked_reason.section_headers` (comment section headers recognized at the start of a line, case-insensitive) | `["BLOCKED REASON", "SKIPPED REASON"]` | — |
+| `report.blocked_reason.max_length` (1–1000 characters) | `160` | — |
+| `report.applicability.all_label` (Applicability label when every configured application matches, e.g. `"Both"`; requires `mappings.custom_fields.applicability`) | none (application names are listed) | — |
 
 ### Configuration principles
 
@@ -439,9 +443,9 @@ to the application/platform attribution of each run.
 |---|---|
 | `result_available` | A final result exists (window or lookback). |
 | `untested` | The case is in a collected run but has no status-bearing result. |
-| `not_applicable` | The final status is not applicable, the test's current status is not applicable (without results in the lookback), or configured applicability metadata excludes the case. |
+| `not_applicable` | The final status is not applicable, the test's current status is not applicable (without results in the lookback), or a resolved applicability value excludes the case. |
 | `not_included_in_run` | Runs for the application/platform were collected; the case is not in them. |
-| `unknown_applicability` | As above, but applicability is configured and the case's value is missing. |
+| `unknown_applicability` | As above, but applicability is configured and the case's value is missing, unmapped, or could not be read. |
 | `no_run_for_platform` | No run for this application/platform was found; this is not a failure. |
 | `no_result_within_lookback` | The case was executed (per its current status) or runs exist, but no result record lies within the lookback. |
 | `results_incomplete` | The result-record cap cut or skipped the relevant run(s) before a status-bearing record was retrieved. |
@@ -454,7 +458,31 @@ missing tests.
 `mappings.custom_fields.applicability` to a case field system name and list
 the matching raw values (IDs or strings) in `applicability_values` for each
 application. The value is read from `get_tests`; only cases lacking it there
-trigger one bulk `get_cases` request per suite.
+trigger one bulk `get_cases` request per suite. Values are compared as text,
+so `3` and `"3"` match. A dropdown option meaning "both" is simply listed
+under every application it covers:
+
+```toml
+[mappings.custom_fields]
+applicability = "custom_target_applications"
+
+[[mappings.applications]]
+name = "Application A"
+patterns = ['(?i)\bapp-a\b']
+applicability_values = [1, 3]   # option 3 covers both applications
+
+[[mappings.applications]]
+name = "Application B"
+patterns = ['(?i)\bapp-b\b']
+applicability_values = [2, 3]
+```
+
+A case is **excluded** from an application only when its value was read, is
+set, lists none of that application's values, and contains no value that is
+unmapped (listed by no configured application). An empty, unmapped, or
+unread value never establishes an exclusion; the case is then
+`unknown_applicability`. An actual result always takes precedence over the
+case value.
 
 ### API request budget
 
@@ -683,8 +711,8 @@ the latest status of that combination, or a state:
 
 | Cell | When |
 |---|---|
-| No History | the case was not in any collected run of the combination |
-| Not Applicable | diagnosis or latest status is not applicable |
+| No History | the case was not in any collected run of the combination (the note says whether its applicability applies or is unresolved) |
+| Not Applicable | diagnosis or latest status is not applicable, or, without any history, a resolved applicability value excludes the application |
 | Partial | collection was incomplete for the combination |
 | Applicability Unresolved | not executed, and applicability metadata is missing |
 | Not Run | no execution, or none within the history window |
@@ -694,7 +722,9 @@ Colour follows the shown status (green Passed, red Failed, yellow Automation
 Issue, grey otherwise); an `Inconsistent` diagnosis turns the cell yellow
 while keeping the status. **Green Passed means the latest result passed, not
 that stability is confirmed**: the cell's note shows the diagnosis,
-confidence, executions, pass rate, coverage, and latest result date.
+confidence, executions, pass rate, coverage, and latest result date, and,
+for a latest status of Blocked, `Blocked reason: <reason>` (see
+[Blocked reason](#blocked-reason)).
 
 **`Stability Details`** (the XML `Stability` worksheet): one row per Test Case
 ID, sorted by ID.
@@ -702,17 +732,21 @@ ID, sorted by ID.
 | Column | Source |
 |---|---|
 | Test Case ID | TestRail case ID |
+| Test Case Title | the case title from the case's newest test instance with one (`get_tests`, no extra request); `Title unavailable` (with a `Report Info` limitation) when none was returned. Never derived from Class Name |
 | Feature / Test Group | the case's section hierarchy (see below); omitted when `report.feature_group.enabled = false` |
 | Class Name | `mappings.custom_fields.class_name`, read from the case's newest test instance; omitted when not configured |
 | Test Type | case type name (`get_case_types`, one request); the type ID if it cannot be fetched |
 | Defects | defect IDs shared across all applications/platforms (see [Case-level defect aggregation](#case-level-defect-aggregation)) |
+| Applicability | only when `mappings.custom_fields.applicability` is configured: the configured applications the case applies to, by mapped name and in configuration order (e.g. `Application A, Application B`, or `report.applicability.all_label` when every application matches). `Not set` (no value), `Unmapped` (a value no application lists; appended to matched names), `Unknown (not fetched)` (request budget), `Unknown (case not found)` (not returned by `get_cases`). TestRail option labels are not used |
 
 Then, for every configured application × platform combination (limited by
 `filters.*` when set), in configuration order: Latest Status, Latest Result
 (UTC), Executions, Pass Rate, Failure Rate, Automation Issue Rate, Diagnosis,
-Confidence, and Coverage. Each combination is analyzed independently.
+Confidence, Coverage, and Blocked Reason (when `report.blocked_reason.enabled`).
+Each combination is analyzed independently.
 `No History` means the case was not in any collected run of that
-combination. Histories of runs with an unidentified application or platform
+combination; when a resolved applicability value excludes the application,
+`N/A` is shown instead. Histories of runs with an unidentified application or platform
 cannot be placed in a combination column; they are counted in `Report Info`.
 
 | Colour | Diagnosis / latest status |
@@ -724,10 +758,54 @@ cannot be placed in a combination column; they are counted in `Report Info`.
 
 **`Report Info` worksheet**: project ID, collection mode and selection,
 window and lookback, collection status (OK/PARTIAL), API requests, case and
-combination counts, coverage, diagnosis, and Overview status counts, explicit
+combination counts, coverage, diagnosis, and Overview status counts, test
+case applicability counts and the number of combinations shown as Not
+Applicable without history, Blocked reason counts, explicit
 notes for selection-limited, lookback-limited, and partial coverage, defect
 coverage, Feature / Test Group summary, every limitation, and a legend
 (colours, Overview, confidence levels).
+
+### Blocked reason
+
+For a combination whose **latest known result is a verified Blocked final**
+(its run's result stream was not cut by the result-record cap), a short
+reason is taken from that result's comment, or, if it has none, from
+comment-only triage notes added after it in the same run. Earlier retries,
+older runs, and combinations whose latest status is not Blocked are never
+used, so a historical Blocked reason does not appear once a newer result
+exists.
+
+Only text following a configured header at the start of a line is used,
+e.g.:
+
+```text
+BLOCKED REASON: Payment sandbox unavailable
+```
+
+Headers may be decorated with markdown or HTML (`**SKIPPED REASON:**`,
+`### Blocked reason`, `<p>BLOCKED REASON</p>`), and the text may start on the
+next line. The section ends at a blank line, another labelled section
+(`STEPS:`, `**Expected Result:**`, a heading), a code block, or the first log
+or stack-trace line (timestamps, log levels, `Traceback`, stack frames,
+qualified exception names). The section is then stripped of images,
+attachment and file references, and markdown link targets; URLs, emails,
+credentials, session and other identifiers, tokens, and paths are replaced
+with placeholders; and the text is collapsed to one line and truncated to
+`max_length`. A comment without a recognized section, or one that leaves
+almost nothing but placeholders, yields `Reason unavailable`; the comment
+itself is **never** exported. An unverified Blocked latest result also shows
+`Reason unavailable`.
+
+The reason is shown in the Overview note and the `Blocked Reason` column of
+Stability Details (also in the XML report). It never changes the latest
+status, diagnosis, or confidence.
+
+```toml
+[report.blocked_reason]
+enabled = true
+section_headers = ["BLOCKED REASON", "SKIPPED REASON"]
+max_length = 160
+```
 
 ### Google Sheets
 
@@ -778,18 +856,21 @@ with a limitation:
 
 Reports contain only these fields:
 
-- **Case columns:** Test Case ID, Feature / Test Group (section names), Class
-  Name (the raw value of the configured custom field), Test Type, and Defects
-  (defect IDs as entered in results).
+- **Case columns:** Test Case ID, Test Case Title, Feature / Test Group
+  (section names), Class Name (the raw value of the configured custom field),
+  Test Type, Defects (defect IDs as entered in results), and Applicability
+  (configured application names).
 - **Combination columns:** analyzed values only (latest status and date,
-  execution count, rates, diagnosis, confidence, coverage).
+  execution count, rates, diagnosis, confidence, coverage) and, for a latest
+  Blocked status, the sanitized Blocked reason excerpt.
 - **Report Info:** project, suite, selected plan and run IDs, collection
   settings and counts, limitations, and the legend.
 
-Result comments, case steps and other case content, plan and run names,
-session IDs, the TestRail base URL, and credentials are never written.
+Result comments (beyond the sanitized excerpt of a configured Blocked reason
+section), case steps and other case content, plan and run names, session IDs,
+the TestRail base URL, and credentials are never written.
 
-Text fields copied from TestRail (section names, Class Name, defect IDs) are
+Text fields copied from TestRail (titles, section names, Class Name, defect IDs) are
 exported as entered: if they contain URL text, that text appears in the
 report as plain text. The exporter never creates hyperlinks, external links,
 or links to TestRail or defect trackers; XLSX values are stored as text
@@ -1008,7 +1089,11 @@ tests/integration/   reserved for opt-in live tests
   `is_completed` filters; their boundary-second semantics are handled by
   overlapping queries.
 - Custom field values (e.g. dropdown IDs) are not decoded; applicability
-  values are matched as configured, and Class Name shows the raw value.
+  values are matched as configured and shown as application names, and Class
+  Name shows the raw value.
+- Applicability can only mark combinations of cases that appear in at least
+  one collected run; cases never executed in the collected scope are not
+  listed.
 - Feature / Test Group is the case's **current** section at report time; for
   a case moved since, older executions are shown under its new group.
 - In reports, histories with an unidentified application or platform, or
@@ -1021,3 +1106,7 @@ tests/integration/   reserved for opt-in live tests
 - A defect ID that starts with `=`, `+`, `-`, or `@` and is the first in its
   cell is shown with a leading `'` (formula-injection protection).
 - XLSX column widths are approximations of the shared point widths.
+- Blocked reasons are recognized only in sections whose header starts a line;
+  redaction is pattern-based and best-effort, so an unusual secret format
+  inside a reason section could remain. Reports must not be shared outside
+  the approved audience.

@@ -33,6 +33,9 @@ DEFAULT_MAX_RETRIES: Final = 3
 DEFAULT_RETRY_BACKOFF_SECONDS: Final = 1.0
 DEFAULT_MAX_RETRY_DELAY_SECONDS: Final = 60.0
 DEFAULT_FEATURE_GROUP_SEPARATOR: Final = "/"
+DEFAULT_BLOCKED_REASON_HEADERS: Final = ("BLOCKED REASON", "SKIPPED REASON")
+DEFAULT_BLOCKED_REASON_MAX_LENGTH: Final = 160
+MAX_BLOCKED_REASON_LENGTH: Final = 1000
 CREDENTIAL_PROVIDER_TYPES: Final = ("environment", "keychain")
 
 # Non-secret settings that may be overridden from the environment.
@@ -210,8 +213,28 @@ class FeatureGroupSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class ApplicabilitySettings:
+    """Test Case Applicability column; labels are built from the configured application mappings."""
+
+    # Shown instead of the application names when every configured application matches (e.g. "Both").
+    all_label: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BlockedReasonSettings:
+    """Reason of the latest verified Blocked result, from a labelled section of its comment."""
+
+    enabled: bool = True
+    # Section headers recognized at the start of a comment line (case-insensitive); nothing else is used.
+    section_headers: tuple[str, ...] = DEFAULT_BLOCKED_REASON_HEADERS
+    max_length: int = DEFAULT_BLOCKED_REASON_MAX_LENGTH
+
+
+@dataclass(frozen=True, slots=True)
 class ReportSettings:
     feature_group: FeatureGroupSettings = FeatureGroupSettings()
+    applicability: ApplicabilitySettings = ApplicabilitySettings()
+    blocked_reason: BlockedReasonSettings = BlockedReasonSettings()
 
 
 @dataclass(frozen=True, slots=True)
@@ -392,6 +415,8 @@ class _Parser:
         collection = self._collection(data)
         credential_provider = self._credential_provider(data)
         report = self._report(data)
+        if report.applicability.all_label is not None and "applicability" not in custom_fields:
+            self.errors.append("report.applicability.all_label requires mappings.custom_fields.applicability")
 
         if self.errors:
             raise ConfigurationError(self.errors)
@@ -427,7 +452,7 @@ class _Parser:
         )
 
     def _report(self, data: Mapping[str, Any]) -> ReportSettings:
-        report = self._section(data, "report", {"feature_group"})
+        report = self._section(data, "report", {"feature_group", "applicability", "blocked_reason"})
         path = "report.feature_group"
         group = report.get("feature_group", {})
         if not isinstance(group, Mapping):
@@ -450,8 +475,55 @@ class _Parser:
                 separator=separator,
                 max_depth=max_depth if max_depth is not None else 0,
                 include_suite_name=self._boolean(group, "include_suite_name", path, default=False),
+            ),
+            self._report_applicability(report),
+            self._blocked_reason(report),
+        )
+
+    def _blocked_reason(self, report: Mapping[str, Any]) -> BlockedReasonSettings:
+        path = "report.blocked_reason"
+        section = report.get("blocked_reason", {})
+        if not isinstance(section, Mapping):
+            self.errors.append(f"{path} must be a table")
+            return BlockedReasonSettings()
+        self._check_keys(section, path, {"enabled", "section_headers", "max_length"})
+        headers = section.get("section_headers", list(DEFAULT_BLOCKED_REASON_HEADERS))
+        valid = (
+            isinstance(headers, list)
+            and bool(headers)
+            and all(
+                isinstance(h, str) and h.strip() and not any(unicodedata.category(c) == "Cc" for c in h)
+                for h in headers
             )
         )
+        if not valid:
+            self.errors.append(f"{path}.section_headers must be a non-empty list of non-empty single-line strings")
+            headers = list(DEFAULT_BLOCKED_REASON_HEADERS)
+        max_length = self._integer(section, "max_length", path, default=DEFAULT_BLOCKED_REASON_MAX_LENGTH, minimum=1)
+        if max_length is not None and max_length > MAX_BLOCKED_REASON_LENGTH:
+            self.errors.append(f"{path}.max_length must be <= {MAX_BLOCKED_REASON_LENGTH}")
+        return BlockedReasonSettings(
+            enabled=self._boolean(section, "enabled", path, default=True),
+            section_headers=tuple(dict.fromkeys(" ".join(h.split()) for h in headers)),
+            max_length=max_length if max_length is not None else DEFAULT_BLOCKED_REASON_MAX_LENGTH,
+        )
+
+    def _report_applicability(self, report: Mapping[str, Any]) -> ApplicabilitySettings:
+        path = "report.applicability"
+        section = report.get("applicability", {})
+        if not isinstance(section, Mapping):
+            self.errors.append(f"{path} must be a table")
+            return ApplicabilitySettings()
+        self._check_keys(section, path, {"all_label"})
+        label = section.get("all_label")
+        if label is not None and (
+            not isinstance(label, str)
+            or not label.strip()
+            or any(unicodedata.category(char) == "Cc" for char in label)
+        ):
+            self.errors.append(f"{path}.all_label must be a non-empty string without control characters")
+            label = None
+        return ApplicabilitySettings(all_label=label.strip() if label is not None else None)
 
     def _credential_provider(self, data: Mapping[str, Any]) -> CredentialProviderSettings:
         path = "credential_provider"

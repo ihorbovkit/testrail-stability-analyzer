@@ -30,17 +30,21 @@ import math
 from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any
 
 from ..api import TestRailClient, TestRailRequestBudgetExceeded
 from ..api.client import MAX_PAGE_LIMIT
-from ..config.settings import DimensionMapping, Settings
+from ..config.settings import Settings
 from ..models import Plan, Result, StatusResolver, Test
 from .case_metadata import CaseMetadataCache
 from .discovery import RunDiscovery, created_after_cutoff
 from .history import Group, build_histories, group_of
+from .applicability import normalize_values, resolve_applicability
 from .models import (
     Applicability,
+    ApplicabilityValueState,
+    CaseApplicability,
     CollectionReport,
     DimensionValue,
     DiscoveredRun,
@@ -125,6 +129,7 @@ class _Session:
         self.conflicts: list[ResultConflict] = []
         # Cases whose applicability could not be read because a get_cases request was not made.
         self.applicability_unchecked: set[int] = set()
+        self.case_applicability: dict[int, CaseApplicability] | None = None
         custom_fields = settings.mappings.custom_fields
         self.applicability_field = custom_fields.get("applicability")
         self.version_field = custom_fields.get("application_version")
@@ -192,6 +197,7 @@ class _Session:
             result_records_fetched=self.records_fetched,
             max_results=self.max_results,
             results_capped=bool(self.capped_runs),
+            case_applicability=None if self.case_applicability is None else MappingProxyType(self.case_applicability),
         )
 
     # -- API calls ---------------------------------------------------------
@@ -269,44 +275,37 @@ class _Session:
         field = self.applicability_field
         if field is None:
             return lambda case_id, application: Applicability.NOT_CONFIGURED
-        values = self._applicability_values(field)
-        mappings: dict[str, DimensionMapping] = {app.name: app for app in self.settings.mappings.applications}
+        cases = self.case_applicability = self._case_applicability(field)
+        applications = self.settings.mappings.applications
+        return lambda case_id, application: resolve_applicability(cases.get(case_id), application.name, applications)
 
-        def lookup(case_id: int, application: DimensionValue) -> Applicability:
-            mapping = mappings.get(application.name) if application.name is not None else None
-            raw = values.get(case_id)
-            if mapping is None or not mapping.applicability_values or raw in (None, "", []):
-                return Applicability.UNKNOWN
-            allowed = {str(value) for value in mapping.applicability_values}
-            raw_values = raw if isinstance(raw, list) else [raw]
-            if any(str(value) in allowed for value in raw_values):
-                return Applicability.APPLICABLE
-            return Applicability.NOT_APPLICABLE
-
-        return lookup
-
-    def _applicability_values(self, field: str) -> dict[int, Any]:
+    def _case_applicability(self, field: str) -> dict[int, CaseApplicability]:
         """Case field values from ``get_tests``; ``get_cases`` (bulk, per suite) only for cases lacking it."""
-        values: dict[int, Any] = {}
+        values: dict[int, CaseApplicability] = {}
         suites_by_case: dict[int, int | None] = {}
         for outcome in self.outcomes:
             value = field_value(outcome.test, field, _MISSING)
             if value is not _MISSING:
-                values.setdefault(outcome.case_id, value)
+                read = CaseApplicability(ApplicabilityValueState.READ, normalize_values(value))
+                values.setdefault(outcome.case_id, read)
             else:
                 suite_id = outcome.source.run.suite_id or self.settings.testrail.suite_id
                 suites_by_case.setdefault(outcome.case_id, suite_id)
         missing = {case: suite for case, suite in suites_by_case.items() if case not in values}
         for suite_id in sorted(set(missing.values()), key=lambda suite: suite or 0):
+            in_suite = [case for case, suite in missing.items() if suite == suite_id]
             cases = self._call(lambda: self.case_cache.cases(suite_id))
             if cases is None:
-                self.applicability_unchecked.update(case for case, suite in missing.items() if suite == suite_id)
+                self.applicability_unchecked.update(in_suite)
+                values.update(dict.fromkeys(in_suite, CaseApplicability(ApplicabilityValueState.NOT_FETCHED)))
                 continue
-            for case in cases.values():
-                if case.id in missing:
-                    value = field_value(case, field, _MISSING)
-                    if value is not _MISSING:
-                        values[case.id] = value
+            for case_id in in_suite:
+                case = cases.get(case_id)
+                values[case_id] = (
+                    CaseApplicability(ApplicabilityValueState.CASE_NOT_FOUND)
+                    if case is None
+                    else CaseApplicability(ApplicabilityValueState.READ, normalize_values(field_value(case, field)))
+                )
         return values
 
     # -- bookkeeping -------------------------------------------------------

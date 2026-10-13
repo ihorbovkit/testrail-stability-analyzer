@@ -46,6 +46,11 @@ run_name_patterns = []
 name = "Application A"
 patterns = ['(?i)\bapp-a\b']
 sources = ["plan_name", "run_name"]
+# Raw values of the applicability case field (option IDs or strings) that mark
+# a case as applicable to this application; requires
+# mappings.custom_fields.applicability. List a "both" option under every
+# application it covers.
+# applicability_values = [1, 3]
 
 [[mappings.platforms]]
 name = "Platform X"
@@ -108,3 +113,18 @@ separator = "/"
 max_depth = 0
 # Prefix labels with the suite name (one extra get_suites request).
 include_suite_name = false
+
+# Blocked Reason: for a latest verified Blocked result, a sanitized excerpt of
+# the comment section that follows one of these headers (start of a line,
+# case-insensitive). Without such a section, "Reason unavailable" is shown;
+# the comment itself is never exported.
+[report.blocked_reason]
+enabled = true
+section_headers = ["BLOCKED REASON", "SKIPPED REASON"]
+max_length = 160
+
+# Test Case Applicability column (shown when mappings.custom_fields.applicability
+# is set). Labels are the configured application names; all_label replaces them
+# when every configured application matches.
+[report.applicability]
+# all_label = "Both"

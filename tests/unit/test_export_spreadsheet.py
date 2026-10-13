@@ -14,7 +14,7 @@ from .fake_testrail import AUTOMATION_ISSUE, FAILED, NOT_APPLICABLE, PASSED
 
 NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
 SS = "{urn:schemas-microsoft-com:office:spreadsheet}"
-METRICS = 9
+METRICS = 10  # including Blocked Reason
 
 
 def parse(xml):
@@ -78,11 +78,11 @@ class WorkbookStructureTests(unittest.TestCase):
             (("App A", "Platform X"), ("App A", "Platform Y"), ("App B", "Platform X"), ("App B", "Platform Y")),
         )
         names, _ = table(render(runs([PASSED] * 5), settings=settings))
-        self.assertEqual(names[:3], ["Test Case ID", "Test Type", "Defects"])
-        self.assertEqual(len(names), 3 + 4 * METRICS)
-        self.assertEqual(names[3:12], [column(metric=m) for m in (
+        self.assertEqual(names[:4], ["Test Case ID", "Test Case Title", "Test Type", "Defects"])
+        self.assertEqual(len(names), 4 + 4 * METRICS)
+        self.assertEqual(names[4:14], [column(metric=m) for m in (
             "Latest Status", "Latest Result (UTC)", "Executions", "Pass Rate", "Failure Rate",
-            "Automation Issue Rate", "Diagnosis", "Confidence", "Coverage",
+            "Automation Issue Rate", "Diagnosis", "Confidence", "Coverage", "Blocked Reason",
         )])  # fmt: skip
 
     def test_filters_limit_the_combinations(self):
@@ -186,7 +186,7 @@ class CaseColumnTests(unittest.TestCase):
         self.assertNotIn("Class Name", names)
         settings = fx.settings(mappings={"custom_fields": {"class_name": "custom_class"}})
         names, rows = table(render(outcomes, settings=settings))
-        self.assertEqual(names[:4], ["Test Case ID", "Class Name", "Test Type", "Defects"])
+        self.assertEqual(names[:5], ["Test Case ID", "Test Case Title", "Class Name", "Test Type", "Defects"])
         self.assertEqual(rows[0]["Class Name"][0], "pkg.module.TestClass")
 
     def test_feature_group_column(self):
@@ -199,7 +199,7 @@ class CaseColumnTests(unittest.TestCase):
         self.assertNotIn("Feature / Test Group", names)
 
         names, rows = table(render(outcomes, case_groups=MappingProxyType(groups)))
-        self.assertEqual(names[1], "Feature / Test Group")
+        self.assertEqual(names[2], "Feature / Test Group")
         self.assertEqual(rows[0]["Feature / Test Group"], ("Area Two/Feature_Alpha/Deep", "String", None))
         self.assertEqual(rows[1]["Feature / Test Group"], ("Unknown (case not found)", "String", "neutral"))
 
@@ -241,7 +241,7 @@ class SafetyTests(unittest.TestCase):
         self.assertIn("'@App <&> | Platform X: Diagnosis", names)
         self.assertNotIn("\x07", xml)
 
-    def test_comments_and_case_content_are_never_exported(self):
+    def test_comments_and_case_content_other_than_the_title_are_never_exported(self):
         base = outcome(500, 100, rec(1, FAILED, 1))
         result = dataclasses.replace(base.results[0].result, comment="SECRET-COMMENT session_id=abc123")
         record = dataclasses.replace(base.results[0], result=result)
@@ -249,8 +249,10 @@ class SafetyTests(unittest.TestCase):
         test = dataclasses.replace(base.test, custom_fields=content, title="Confidential title")
         leaked = dataclasses.replace(base, results=(record,), final=record, test=test)
         xml = render([leaked])
-        for secret in ("SECRET-COMMENT", "abc123", "SECRET-STEPS", "SECRET-PRECONDS", "Confidential title"):
+        for secret in ("SECRET-COMMENT", "abc123", "SECRET-STEPS", "SECRET-PRECONDS"):
             self.assertNotIn(secret, xml)
+        _, rows = table(xml)
+        self.assertEqual(rows[0]["Test Case Title"][0], "Confidential title")  # titles are an explicit column
 
 
 class ReportInfoTests(unittest.TestCase):

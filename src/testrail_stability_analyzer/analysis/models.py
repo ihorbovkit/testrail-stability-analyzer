@@ -189,6 +189,9 @@ class KeyAnalysis:
     confidence: Confidence
     reasons: tuple[str, ...]
     defects: CaseDefects  # shared by every application/platform of the case
+    # Sanitized reason from a labelled section of the latest result's comment; only set when the latest
+    # known result is a verified Blocked final (see ``analyzer.blocked_reason``). Never the raw comment.
+    blocked_reason: str | None = None
 
     @property
     def key(self) -> HistoryKey:

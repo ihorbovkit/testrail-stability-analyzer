@@ -81,12 +81,33 @@ class DiscoveredRun:
         return self.decision is RunDecision.INCLUDED
 
 
+class SelectionKind(StrEnum):
+    PLAN = "plan"
+    RUN = "run"
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidSelection:
+    """An explicitly selected plan or run ID that could not be collected."""
+
+    kind: SelectionKind
+    id: int
+    reason: str
+    http_status: int | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class DiscoveryResult:
     runs: tuple[DiscoveredRun, ...]
+    # False when runs may be missing: request budget, or selected IDs that could not be collected.
     complete: bool
     limitations: tuple[str, ...] = ()
     budget_exhausted: bool = False
+    # Targeted collection: only explicitly selected plans and runs; no project-wide discovery.
+    targeted: bool = False
+    selected_plan_ids: tuple[int, ...] = ()
+    selected_run_ids: tuple[int, ...] = ()
+    invalid_selections: tuple[InvalidSelection, ...] = ()
 
     @property
     def included(self) -> tuple[DiscoveredRun, ...]:
@@ -130,6 +151,9 @@ class RunOutcome:
     application_version: str | None = None
     # True when results created before the lookback start were not fetched.
     evidence_truncated: bool = False
+    # False when the run's result stream was cut by the result-record cap, so
+    # records of this test (possibly its final triage) may be missing.
+    results_complete: bool = True
 
     @property
     def case_id(self) -> int:
@@ -156,6 +180,11 @@ class RunOutcome:
     def category(self) -> StatusCategory | None:
         return None if self.final is None or self.final.status is None else self.final.status.category
 
+    @property
+    def is_verified_final(self) -> bool:
+        """True when ``final`` comes from an uncapped result stream for the run."""
+        return self.final is not None and self.results_complete
+
 
 class AvailabilityState(StrEnum):
     RESULT_AVAILABLE = "result_available"
@@ -165,6 +194,7 @@ class AvailabilityState(StrEnum):
     NO_RUN_FOR_PLATFORM = "no_run_for_platform"  # no collected run for this app/platform
     UNKNOWN_APPLICABILITY = "unknown_applicability"  # not included, and applicability metadata is missing
     NO_RESULT_WITHIN_LOOKBACK = "no_result_within_lookback"  # executed, but no result record within lookback
+    RESULTS_INCOMPLETE = "results_incomplete"  # no status-bearing record retrieved before the record cap
 
 
 class Applicability(StrEnum):
@@ -181,6 +211,8 @@ class Coverage(StrEnum):
     COMPLETE = "complete"
     # As COMPLETE, but only runs created within the lookback (or still open) were discovered.
     LOOKBACK_LIMITED = "lookback_limited"
+    # Targeted collection: complete within the selected runs; other runs were not scanned.
+    SELECTION_LIMITED = "selection_limited"
     # Some relevant runs could not be scanned (request budget, incomplete discovery).
     PARTIAL = "partial"
 
@@ -235,6 +267,18 @@ class RunScan:
     # Open, or created in the window: its tests are needed even without results,
     # since they can hold untested instances.
     active_in_window: bool = False
+    # The result-record cap was reached in this run's stream; older records may be missing.
+    results_capped: bool = False
+    # Results were not fetched because the cap had already been reached.
+    skipped_by_cap: bool = False
+
+    @property
+    def cut_by_cap(self) -> bool:
+        return self.results_capped or self.skipped_by_cap
+
+    @property
+    def complete(self) -> bool:
+        return self.results_fetched and self.tests_fetched and not self.results_capped
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,3 +304,19 @@ class CollectionReport:
     budget_exhausted: bool
     requests_made: int
     limitations: tuple[str, ...]
+    # Result records retrieved from the API (including retries and comment-only records),
+    # as opposed to the number of distinct run outcomes.
+    result_records_fetched: int = 0
+    max_results: int | None = None  # configured result-record cap, if any
+    results_capped: bool = False  # the cap was reached; further records were not retrieved
+
+    @property
+    def is_partial(self) -> bool:
+        """True when collection was interrupted (cap, budget, invalid selections) or histories are partial."""
+        return (
+            self.budget_exhausted
+            or self.results_capped
+            or not self.discovery.complete
+            or any(not scan.results_fetched for scan in self.scans)
+            or any(history.coverage is Coverage.PARTIAL for history in self.histories)
+        )

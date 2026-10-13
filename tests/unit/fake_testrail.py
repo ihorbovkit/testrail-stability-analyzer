@@ -1,8 +1,8 @@
 """An in-memory, read-only fake of the TestRail endpoints used by collection.
 
 Applies the documented server-side filters (``created_after``/``created_before``,
-``is_completed``, ``suite_id``) so discovery queries are exercised realistically.
-All data is synthetic.
+``is_completed``, ``suite_id``) and the ``limit`` page size so discovery and
+capped retrieval are exercised realistically. All data is synthetic.
 """
 
 import json
@@ -99,6 +99,7 @@ class FakeTestRail:
         self.page_size = page_size
         self.calls = []  # endpoint paths, e.g. "get_tests/501"
         self.params = []  # query parameters per call
+        self.errors = {}  # endpoint path -> (HTTP status, error message)
 
     # -- data setup --------------------------------------------------------
 
@@ -136,6 +137,9 @@ class FakeTestRail:
         params = dict(parse_qsl(query))
         self.calls.append(path)
         self.params.append(params)
+        if path in self.errors:
+            status, message = self.errors[path]
+            return HttpResponse(status, json.dumps({"error": message}).encode(), {})
         name, *ids = path.split("/")
         handler = getattr(self, "_" + name)
         payload = handler(*map(int, ids), params)
@@ -143,12 +147,13 @@ class FakeTestRail:
 
     def _page(self, key, items, params):
         offset = int(params.get("offset", 0))
-        if not self.page_size:
+        size = int(params["limit"]) if "limit" in params else self.page_size
+        if not size:
             return {key: items, "_links": {"next": None}}
-        page = items[offset : offset + self.page_size]
-        more = offset + self.page_size < len(items)
+        page = items[offset : offset + size]
+        more = offset + size < len(items)
         query = "&".join(f"{k}={v}" for k, v in params.items() if k != "offset")
-        next_link = f"/api/v2/{self.calls[-1]}&{query}&offset={offset + self.page_size}" if more else None
+        next_link = f"/api/v2/{self.calls[-1]}&{query}&offset={offset + size}" if more else None
         return {key: page, "_links": {"next": next_link.replace("&&", "&") if next_link else None}}
 
     def _get_runs(self, project_id, params):
@@ -165,6 +170,19 @@ class FakeTestRail:
         plan, runs = self.plans[plan_id]
         entries = [{"id": f"entry-{plan_id}", "suite_id": 10, "name": plan["name"], "runs": runs}] if runs else []
         return {**plan, "entries": entries}
+
+    def _get_run(self, run_id, params):
+        for run_payload in self.standalone_runs:
+            if run_payload["id"] == run_id:
+                return run_payload
+        for _, runs in self.plans.values():
+            for run_payload in runs:
+                if run_payload["id"] == run_id:
+                    return run_payload
+        return None  # unreachable in tests: unknown IDs are configured in ``errors``
+
+    def _get_statuses(self, params):
+        return STATUSES
 
     def _get_tests(self, run_id, params):
         return self._page("tests", self.tests[run_id], params)

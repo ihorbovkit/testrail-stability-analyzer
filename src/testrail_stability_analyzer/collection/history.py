@@ -63,6 +63,7 @@ def build_histories(
     case_notes: Mapping[int, str] | None = None,
     lookback_limited: bool = False,
     discovery_complete: bool = True,
+    selection_limited: bool = False,
 ) -> tuple[ExecutionHistory, ...]:
     """Build one history per key.
 
@@ -78,6 +79,8 @@ def build_histories(
             for platform in platforms:
                 by_key.setdefault(HistoryKey(key.case_id, key.application, platform), [])
 
+    # Groups with runs cut or skipped by the result-record cap: absent cases may be in the missing records.
+    cut_groups = {group for group, scans in gaps.items() if any(scan.cut_by_cap for scan in scans)}
     histories = []
     for key in sorted(by_key, key=_key_order):
         ordered = tuple(sorted(by_key[key], key=newest_first, reverse=True))
@@ -86,12 +89,15 @@ def build_histories(
         group = (key.application, key.platform) if key.is_identified else None
         key_applicability = applicability(key.case_id, key.application)
         key_notes = [*global_notes, *([case_notes[key.case_id]] if case_notes and key.case_id in case_notes else [])]
-        coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited)
+        capped = sum(1 for outcome in ordered if not outcome.results_complete)
+        if capped:
+            key_notes.append(f"result records of {capped} run(s) were cut by the result-record cap")
+        coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited, selection_limited)
         window_complete, window_notes = _window_completeness(group, gaps, window_start, discovery_complete)
         histories.append(
             ExecutionHistory(
                 key=key,
-                state=_state(ordered, latest, group, key_applicability, groups_with_runs, scanned_groups),
+                state=_state(ordered, latest, group, key_applicability, groups_with_runs, scanned_groups, cut_groups),
                 applicability=key_applicability,
                 outcomes=ordered,
                 window=tuple(in_window[:max_runs]),
@@ -120,6 +126,7 @@ def _state(
     applicability: Applicability,
     groups_with_runs: Collection[Group],
     scanned_groups: Collection[Group],
+    cut_groups: Collection[Group] = (),
 ) -> AvailabilityState:
     if latest is not None:
         if latest.category is StatusCategory.NOT_APPLICABLE:
@@ -127,6 +134,8 @@ def _state(
         return AvailabilityState.RESULT_AVAILABLE
     if applicability is Applicability.NOT_APPLICABLE:
         return AvailabilityState.NOT_APPLICABLE
+    if any(not outcome.results_complete for outcome in ordered):
+        return AvailabilityState.RESULTS_INCOMPLETE
     if ordered:
         # Included in a run but no status-bearing record collected. A current status
         # other than untested means earlier results exist, before the lookback.
@@ -135,6 +144,8 @@ def _state(
             return AvailabilityState.NOT_APPLICABLE
         executed = bool(current - {StatusCategory.NOT_RUN})
         return AvailabilityState.NO_RESULT_WITHIN_LOOKBACK if executed else AvailabilityState.UNTESTED
+    if group in cut_groups:
+        return AvailabilityState.RESULTS_INCOMPLETE
     if group in scanned_groups:
         if applicability is Applicability.UNKNOWN:
             return AvailabilityState.UNKNOWN_APPLICABILITY
@@ -151,6 +162,7 @@ def _coverage(
     gaps: Mapping[Group, Sequence[RunScan]],
     global_notes: Sequence[str],
     lookback_limited: bool,
+    selection_limited: bool = False,
 ) -> tuple[Coverage, tuple[str, ...]]:
     notes = list(global_notes)
     if group is not None:
@@ -162,6 +174,11 @@ def _coverage(
             )
     if notes:
         return Coverage.PARTIAL, tuple(notes)
+    if selection_limited:
+        selection_notes = ["only the selected runs were scanned"]
+        if lookback_limited:
+            selection_notes.append("results before the lookback start were not searched")
+        return Coverage.SELECTION_LIMITED, tuple(selection_notes)
     if lookback_limited:
         return Coverage.LOOKBACK_LIMITED, ("results before the lookback start were not searched",)
     return Coverage.COMPLETE, ()
@@ -182,14 +199,14 @@ def _window_completeness(
 
 
 def _may_hold_window_results(scan: RunScan, window_start: datetime) -> bool:
-    if not scan.results_fetched or scan.active_in_window or scan.has_untimed_results:
+    if not scan.results_fetched or scan.results_capped or scan.active_in_window or scan.has_untimed_results:
         return True
     return scan.newest_result_on is not None and scan.newest_result_on >= window_start
 
 
 def _may_hold_newer(scan: RunScan, latest: RunOutcome | None) -> bool:
     """Whether an unscanned run could change this key's latest result or state."""
-    if not scan.results_fetched:
+    if not scan.results_fetched or scan.results_capped:
         return True
     if scan.active_in_window:
         return True  # test membership unknown: the case may be included but untested

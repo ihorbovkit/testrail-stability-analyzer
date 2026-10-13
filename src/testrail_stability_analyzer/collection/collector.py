@@ -2,7 +2,8 @@
 
 Collection order (so that an exhausted request budget loses the least useful data):
 
-1. Discover runs (see :mod:`.discovery`).
+1. Discover runs (see :mod:`.discovery`): project-wide, or only the plans and
+   runs selected in ``[collection]`` (targeted collection).
 2. Fetch results (``created_after`` = lookback start) and tests for runs that
    can be active in the analysis window: open runs and runs created in it.
 3. Fetch results for all other included runs. Closed runs are not assumed to
@@ -11,21 +12,30 @@ Collection order (so that an exhausted request budget loses the least useful dat
    actual result first. Results carry no case ID, so this is the only way to
    find every case executed within the lookback.
 
+An optional result-record cap (``collection.max_results``) is enforced while
+results are retrieved: each request asks for at most the remaining number of
+records, and retrieval stops once the cap is reached. Every record counts,
+including retries and comment-only records. Outcomes of a capped run are
+marked incomplete and their histories ``partial``; runs after the cap are not
+fetched.
+
 Comments are kept on the result models for later analysis but are never
 logged; use :meth:`ResolvedResult.failure_summary` for a sanitized summary.
 """
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from ..api import TestRailClient, TestRailRequestBudgetExceeded
+from ..api.client import MAX_PAGE_LIMIT
 from ..config.settings import DimensionMapping, Settings
-from ..models import Result, StatusResolver, Test
+from ..models import Plan, Result, StatusResolver, Test
 from .discovery import RunDiscovery, created_after_cutoff
 from .history import Group, build_histories, group_of
 from .models import (
@@ -52,11 +62,14 @@ class HistoricalCollector:
         resolver: StatusResolver,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        plans: Mapping[int, Plan] | None = None,
     ) -> None:
+        """``plans``: already fetched selected plans (with entries), reused by targeted collection."""
         self._client = client
         self._settings = settings
         self._resolver = resolver
         self._clock = clock
+        self._plans = plans
 
     def collect(self) -> CollectionReport:
         now = self._clock()
@@ -64,7 +77,12 @@ class HistoricalCollector:
         window_start = now - timedelta(days=history.window_days)
         lookback_days = history.lookback_limit_days or None  # 0 means no limit, as in configuration
         lookback_start = None if lookback_days is None else now - timedelta(days=lookback_days)
-        discovery = RunDiscovery(self._client, self._settings).discover(lookback_start)
+        discoverer = RunDiscovery(self._client, self._settings)
+        selection = self._settings.collection
+        if selection.targeted:
+            discovery = discoverer.discover_selected(selection.plan_ids, selection.run_ids, plans=self._plans)
+        else:
+            discovery = discoverer.discover(lookback_start)
         session = _Session(self._client, self._settings, self._resolver, window_start, lookback_start)
         return session.run(now, discovery)
 
@@ -86,6 +104,10 @@ class _Session:
         self.window_start = window_start
         self.lookback_start = lookback_start
         self.exhausted = False
+        self.max_results = settings.collection.max_results
+        self.records_fetched = 0
+        self.capped_runs: set[int] = set()
+        self.skipped_runs: set[int] = set()  # results not fetched because the cap was reached
         self.results: dict[int, list[Result]] = {}
         self.tests: dict[int, list[Test]] = {}
         self.outcomes: list[RunOutcome] = []
@@ -120,9 +142,13 @@ class _Session:
         gaps: dict[Group, list[RunScan]] = defaultdict(list)
         for scan in scans:
             group = groups[scan.run_id]
-            if group is not None and not (scan.results_fetched and scan.tests_fetched):
+            if group is not None and not scan.complete:
                 gaps[group].append(scan)
-        global_notes = [] if discovery.complete else ["run discovery was incomplete"]
+        global_notes = []
+        if discovery.invalid_selections:
+            global_notes.append(f"{len(discovery.invalid_selections)} selected plan/run ID(s) could not be collected")
+        if discovery.budget_exhausted or (not discovery.complete and not discovery.invalid_selections):
+            global_notes.append("run discovery was incomplete")
         histories = build_histories(
             self.outcomes,
             window_start=self.window_start,
@@ -138,6 +164,7 @@ class _Session:
             ),
             lookback_limited=self.lookback_start is not None,
             discovery_complete=discovery.complete,
+            selection_limited=discovery.targeted,
         )
         return CollectionReport(
             collected_at=now,
@@ -152,6 +179,9 @@ class _Session:
             budget_exhausted=self.exhausted,
             requests_made=self.client.requests_made,
             limitations=self._limitations(discovery, scans, groups),
+            result_records_fetched=self.records_fetched,
+            max_results=self.max_results,
+            results_capped=bool(self.capped_runs),
         )
 
     # -- API calls ---------------------------------------------------------
@@ -167,9 +197,27 @@ class _Session:
 
     def _fetch_results(self, run: DiscoveredRun) -> None:
         created_after = None if self.lookback_start is None else created_after_cutoff(self.lookback_start)
-        fetched = self._call(lambda: list(self.client.get_results_for_run(run.run_id, created_after=created_after)))
+        remaining = None if self.max_results is None else self.max_results - self.records_fetched
+        if remaining is not None and remaining <= 0:
+            self.skipped_runs.add(run.run_id)  # not fetched, so coverage of this run stays partial
+            return
+
+        def fetch() -> list[Result]:
+            if remaining is None:
+                return list(self.client.get_results_for_run(run.run_id, created_after=created_after))
+            page = min(remaining, MAX_PAGE_LIMIT)
+            stream = self.client.get_results_for_run(run.run_id, created_after=created_after, limit=page)
+            # islice stops before requesting another page once the cap is reached.
+            return list(itertools.islice(stream, remaining))
+
+        fetched = self._call(fetch)
         if fetched is None:
             return
+        self.records_fetched += len(fetched)
+        if remaining is not None and len(fetched) >= remaining:
+            # Without retrieving one more record it is unknown whether the stream ended
+            # exactly here, so the run is conservatively treated as capped.
+            self.capped_runs.add(run.run_id)
         unique, conflicts = deduplicate(fetched, run.run_id)
         self.results[run.run_id] = unique
         self.conflicts.extend(conflicts)
@@ -195,6 +243,7 @@ class _Session:
                 self.resolver,
                 version_field=self.version_field,
                 evidence_truncated=truncated,
+                results_complete=run.run_id not in self.capped_runs,
             )
             for test in tests
         ]
@@ -284,6 +333,8 @@ class _Session:
             newest_result_on=None if newest is None else datetime.fromtimestamp(newest, UTC),
             has_untimed_results=untimed,
             active_in_window=self._active_in_window(run),
+            results_capped=run.run_id in self.capped_runs,
+            skipped_by_cap=run.run_id in self.skipped_runs and results is None,
         )
 
     def _limitations(
@@ -292,6 +343,11 @@ class _Session:
         notes = list(discovery.limitations)
         if self.exhausted:
             notes.append("request budget exhausted during collection; coverage is partial")
+        if self.capped_runs:
+            notes.append(
+                f"result-record cap of {self.max_results} reached: older records of {len(self.capped_runs)} run(s) "
+                "may be missing and later runs were not fetched; their outcomes are not verified finals"
+            )
         unfetched = sum(1 for scan in scans if not scan.results_fetched)
         if unfetched:
             notes.append(f"results of {unfetched} included run(s) were not fetched")

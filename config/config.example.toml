@@ -65,6 +65,22 @@ sources = ["configuration", "run_name"]
 [mappings.statuses]
 # automation_issue = ["automation_issue"]
 
+# Optional targeted collection. With plan or run IDs, only those plans (with
+# their child runs) and runs are collected; no project-wide discovery is made.
+# max_results caps the result records retrieved per execution (0 = no cap).
+[collection]
+plan_ids = []
+run_ids = []
+max_results = 0
+
+# Credential source: "environment" (TESTRAIL_USERNAME / TESTRAIL_API_KEY) or
+# "keychain" (macOS only). Only names are configured here, never secret values.
+[credential_provider]
+type = "environment"
+# keychain_service = "example-service"
+# keychain_account = "user@example.com"   # also used as the TestRail username
+# username_variable = "TESTRAIL_USERNAME" # optional: read the username from this variable instead
+
 # Optional include filters by mapped name. Runs resolved to other names are
 # excluded; runs that cannot be classified are reported but not collected.
 [filters]

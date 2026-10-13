@@ -16,6 +16,9 @@ classifiers = [
 # Runtime uses the standard library only.
 dependencies = []
 
+[project.scripts]
+testrail-stability-analyzer = "testrail_stability_analyzer.cli:run"
+
 [tool.poetry]
 packages = [{ include = "testrail_stability_analyzer", from = "src" }]
 

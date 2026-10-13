@@ -55,6 +55,8 @@ API_PREFIX: Final = "/api/v2/"
 _ENDPOINT_RE: Final = re.compile(r"^get_[a-z0-9_]+(?:/[0-9]+)*$")
 _PARAM_RE: Final = re.compile(r"^[a-z][a-z0-9_]*$")
 _MAX_ERROR_MESSAGE_LENGTH: Final = 500
+# Largest page size TestRail accepts for the ``limit`` filter of bulk endpoints.
+MAX_PAGE_LIMIT: Final = 250
 # Temporary server-side conditions worth retrying (in addition to 429).
 _RETRYABLE_STATUSES: Final = frozenset({502, 503, 504})
 
@@ -250,12 +252,22 @@ class TestRailClient:
         created_before: DateFilter | None = None,
         created_by: IdFilter | None = None,
         status_id: IdFilter | None = None,
+        limit: int | None = None,
     ) -> Iterator[Result]:
-        """All results of all tests in a run (newest first), including retries and triage updates."""
+        """All results of all tests in a run (newest first), including retries and triage updates.
+
+        ``limit`` (1-250) is the page size requested from TestRail; pagination
+        still continues while the iterator is consumed. Stop iterating early
+        (e.g. ``itertools.islice``) to bound the number of records retrieved.
+        """
         run_id = _id(run_id, "run_id")
         params = _filters(
             created_after=created_after, created_before=created_before, created_by=created_by, status_id=status_id
         )
+        if limit is not None:
+            if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_PAGE_LIMIT:
+                raise ValueError(f"limit must be an integer between 1 and {MAX_PAGE_LIMIT}")
+            params["limit"] = limit
         return self._iter_models(
             f"get_results_for_run/{run_id}", "results", lambda item: Result.from_api(item, run_id=run_id), params
         )

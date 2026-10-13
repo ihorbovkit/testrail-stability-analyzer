@@ -2,7 +2,7 @@
 
 from .classification import classify_run, match_dimension
 from .collector import HistoricalCollector
-from .discovery import RunDiscovery
+from .discovery import RunDiscovery, SamplePlanSelection
 from .history import build_histories, group_of, history_key
 from .models import (
     Applicability,
@@ -15,12 +15,14 @@ from .models import (
     DiscoveryResult,
     ExecutionHistory,
     HistoryKey,
+    InvalidSelection,
     ResolvedResult,
     ResultConflict,
     RunClassification,
     RunDecision,
     RunOutcome,
     RunScan,
+    SelectionKind,
 )
 from .outcomes import build_outcome, deduplicate, select_final, sort_chronologically
 from .sanitize import sanitize_comment
@@ -37,6 +39,7 @@ __all__ = [
     "ExecutionHistory",
     "HistoricalCollector",
     "HistoryKey",
+    "InvalidSelection",
     "ResolvedResult",
     "ResultConflict",
     "RunClassification",
@@ -44,6 +47,8 @@ __all__ = [
     "RunDiscovery",
     "RunOutcome",
     "RunScan",
+    "SamplePlanSelection",
+    "SelectionKind",
     "build_histories",
     "build_outcome",
     "classify_run",

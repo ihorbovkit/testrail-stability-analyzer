@@ -4,9 +4,11 @@ A reusable, read-only Python application for analyzing test stability in any
 TestRail instance. It is not tied to a specific customer, project, automation
 framework, or TestRail configuration.
 
-> **Status: Milestone 3 (historical execution collection).** Configuration,
-> credential handling, a read-only API client, status resolution, and a
-> historical execution collector are implemented. Stability/flakiness
+> **Status: Milestone 3.1 (targeted collection, Keychain authentication,
+> CLI).** Configuration, credential handling (environment variables or macOS
+> Keychain), a read-only API client, status resolution, a historical
+> execution collector with targeted plan/run selection and a result-record
+> cap, and a command-line interface are implemented. Stability/flakiness
 > metrics and report export are **not** implemented yet. See
 > [Implementation status](#implementation-status).
 
@@ -98,6 +100,11 @@ settings = load_settings("config/local/config.toml")
 | `filters.applications` / `filters.platforms` / `filters.execution_types` | `[]` (include all) | — |
 | `mappings.custom_fields` | `{}` | — |
 | `mappings.statuses` | `{}` | — |
+| `collection.plan_ids` / `collection.run_ids` (targeted collection) | `[]` (project-wide) | — |
+| `collection.max_results` (result-record cap; `0` = no cap) | `0` | `TESTRAIL_MAX_RESULTS` |
+| `credential_provider.type` (`environment` or `keychain`) | `environment` | `TESTRAIL_CREDENTIAL_PROVIDER` |
+| `credential_provider.keychain_service` / `keychain_account` | none (required for `keychain`) | `TESTRAIL_KEYCHAIN_SERVICE` / `TESTRAIL_KEYCHAIN_ACCOUNT` |
+| `credential_provider.username_variable` (environment variable holding the username) | none | — |
 
 ### Configuration principles
 
@@ -141,6 +148,35 @@ TestRail API access must be enabled for the instance (Administration → Site
 Settings → API). The client sends HTTP Basic authentication with the
 username (email) and an API key (or password) obtained from the configured
 `CredentialProvider`. Credentials are fetched lazily on the first request.
+
+### Credential providers
+
+Select the source in `[credential_provider]` (or with `--credential-provider`).
+Only the *location* of credentials is configured, never their values.
+
+| `type` | Username | API key |
+|---|---|---|
+| `environment` (default) | `TESTRAIL_USERNAME` (or `username_variable`) | `TESTRAIL_API_KEY` |
+| `keychain` (macOS only) | the Keychain account (or `username_variable`) | password of the generic Keychain item |
+
+```python
+from testrail_stability_analyzer.config import credential_provider_from_settings
+
+provider = credential_provider_from_settings(settings.credential_provider)
+```
+
+**macOS Keychain prerequisites**
+
+- macOS with the system `/usr/bin/security` tool.
+- A *generic password* item whose service and account names you configure
+  locally (no defaults exist), e.g. created once with Keychain Access, or
+  `security add-generic-password -s <service> -a <account> -w` (prompts for
+  the key; avoid passing it as an argument).
+- The analyzer only reads the item (`security find-generic-password … -w`);
+  macOS may ask once to allow access. A missing item (exit status 44), a
+  denied or cancelled prompt, or another platform raises `CredentialError`
+  without echoing tool output. A configured `username_variable` is checked
+  before the Keychain is read, so a missing username never triggers a prompt.
 
 ### Endpoints
 
@@ -373,7 +409,8 @@ immutable.
 |---|---|
 | `complete` | No lookback limit, discovery complete, and every run that could hold a newer result for this key was scanned. `is_verified_latest` is true only here. |
 | `lookback_limited` | As complete, but only within the lookback period (see discovery). |
-| `partial` | Incomplete discovery, or relevant runs not scanned (request budget). |
+| `selection_limited` | Targeted collection, identified keys: complete within the selected runs; other runs were not scanned. |
+| `partial` | Incomplete discovery, invalid selected IDs, relevant runs not scanned (request budget), or records cut by the result-record cap. |
 
 Even `complete` is limited to the runs TestRail returns for the project and
 to the application/platform attribution of each run.
@@ -389,6 +426,7 @@ to the application/platform attribution of each run.
 | `unknown_applicability` | As above, but applicability is configured and the case's value is missing. |
 | `no_run_for_platform` | No run for this application/platform was found; this is not a failure. |
 | `no_result_within_lookback` | The case was executed (per its current status) or runs exist, but no result record lies within the lookback. |
+| `results_incomplete` | The result-record cap cut or skipped the relevant run(s) before a status-bearing record was retrieved. |
 
 Keys are created for each case on every platform observed in the collected
 runs, so missing platforms are visible. No execution records are created for
@@ -414,6 +452,115 @@ trigger one bulk `get_cases` request per suite.
   Increase `http.max_requests_per_execution` or shorten the lookback.
 - If the budget runs out, collection stops, keeps what was fully collected,
   sets `report.budget_exhausted`, and marks affected histories `partial`.
+- Targeted collection makes no listing requests: one `get_plan` per selected
+  plan, one `get_run` per selected run not already covered by a selected
+  plan, and one `get_plan` per distinct unselected parent plan (for its
+  name), then results and tests as above.
+
+### Targeted collection
+
+Set `collection.plan_ids` and/or `collection.run_ids` (or use the
+[CLI](#command-line-interface)) to collect only those plans and runs:
+
+- Plans resolve to their child runs, which keep the plan ID and name. Selected
+  runs may be standalone or part of a plan; a plan run's parent plan is
+  fetched for its name, so plan-name mappings still apply.
+- Runs selected both through a plan and directly are collected once, with
+  their plan context. Duplicate IDs are ignored.
+- IDs answered with HTTP 400/403/404 or belonging to another project are
+  listed in `report.discovery.invalid_selections` (kind, ID, reason); the
+  remaining IDs are still collected and histories are `partial`. HTTP 401,
+  rate limiting, and server errors stop the collection.
+- Selected runs are never excluded for their age; the suite, naming
+  patterns, and filters still apply. Results are still fetched from the
+  lookback start, so use `lookback_limit_days = 0` for old runs.
+- Histories of identified case/application/platform keys are at best
+  `selection_limited`, and their `window_complete` is false: unselected runs
+  may hold newer results or executions in the window. Unidentified keys
+  consist of one run, which unselected runs cannot change, so they keep the
+  usual `complete`/`lookback_limited`/`partial` coverage; their window is
+  incomplete only when that run's result records were capped.
+- If the request budget runs out while fetching a selected run's parent plan,
+  the run is kept without a plan name (as for an inaccessible parent) and
+  discovery is marked incomplete.
+
+### Result-record limit
+
+`collection.max_results` caps the number of result **records** retrieved per
+execution, a validation aid that is separate from `history.window_days`,
+`history.max_runs` (distinct runs per history), and the request budget.
+
+- Enforced during retrieval: each `get_results_for_run` request asks for at
+  most the remaining number of records (`limit`, at most 250), and iteration
+  stops at the cap, so no further page or run is requested.
+- Every record counts, including retries and comment-only records.
+  `report.result_records_fetched` is the record count; `report.outcomes` are
+  the distinct per-run outcomes.
+- Runs are processed in a deterministic order (open runs first, then newest
+  created). The run in which the cap is reached is marked `results_capped`
+  (also when its stream happens to end exactly at the cap); later runs are
+  `skipped_by_cap` and not fetched.
+- TestRail returns results newest first, so a capped stream may lack a
+  test's older records, or contain only a trailing comment-only record and
+  miss the status before it. Such outcomes have `results_complete = False`,
+  are never `is_verified_final`, and their histories are `partial` (state
+  `results_incomplete` when no status was retrieved). `report.results_capped`
+  is set and `report.is_partial` is true.
+
+## Command-line interface
+
+```bash
+# With Poetry: poetry run testrail-stability-analyzer ...
+PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml
+```
+
+| Command | Collects |
+|---|---|
+| `collect plan PLAN_ID [PLAN_ID ...] [--run-id RUN_ID ...]` | the selected plans (and runs) |
+| `collect run RUN_ID [RUN_ID ...] [--plan-id PLAN_ID ...]` | the selected runs (and plans) |
+| `collect sample [--max-candidates N]` | the newest eligible plan; defaults `--max-results 15 --max-requests 20` |
+
+Options for all commands (each overrides the configuration file; all values
+are validated like the file):
+
+| Option | Setting |
+|---|---|
+| `--config PATH` | TOML file with URL, project ID, mappings (keep it untracked) |
+| `--suite-id N` | `testrail.suite_id` |
+| `--credential-provider {environment,keychain}` | `credential_provider.type` |
+| `--keychain-service NAME` / `--keychain-account NAME` | Keychain item names (never the secret) |
+| `--max-results N` | `collection.max_results` (`0` = no cap) |
+| `--max-requests N` | `http.max_requests_per_execution` |
+| `--window-days N` / `--lookback-days N` | `history.window_days` / `history.lookback_limit_days` |
+
+The command-line selection replaces `collection.plan_ids`/`run_ids` from the
+configuration file. Secrets cannot be passed as arguments.
+
+`collect sample` lists the project's plans created within the lookback
+(paginated, newest first), skips plans whose name does not match
+`naming.plan_name_patterns` without further requests, and fetches up to
+`--max-candidates` (default 5) remaining plans until one has a run included
+by the configured suite, naming patterns, and filters. If none qualifies,
+nothing is collected; an unmatched plan is never selected.
+
+The CLI runs `HistoricalCollector` and prints a summary to standard output:
+project, selected and inspected plan/run IDs, per-run decision and
+application/platform/execution type (configured mapping names or state),
+unresolved classifications, test instances, result records (status-bearing,
+comment-only, with comments, with linked defects), final outcomes (verified
+or from capped streams), status categories, grouping, coverage, states, API
+requests, and limitations. Plan and run names, comment text, defect
+identifiers, URLs, and credentials are never printed, and no files are
+written.
+
+| Exit code | Meaning |
+|---|---|
+| `0` | Collection complete (within its selection and lookback) |
+| `1` | Unexpected error or interruption |
+| `2` | Invalid arguments or configuration |
+| `3` | Partial collection: result-record cap, request budget, or some invalid IDs |
+| `4` | API or credential error, or no selected plan/run could be collected |
+| `5` | `collect sample` found no eligible plan |
 
 ## Security
 
@@ -424,8 +571,13 @@ trigger one bulk `get_cases` request per suite.
   embedded credentials.
 - Credentials are read on demand through a `CredentialProvider`. The built-in
   `EnvironmentCredentialProvider` reads `TESTRAIL_USERNAME` and
-  `TESTRAIL_API_KEY`; other sources (e.g. macOS Keychain) can be added by
-  implementing the same interface.
+  `TESTRAIL_API_KEY`; `KeychainCredentialProvider` reads a macOS Keychain
+  item (read-only; the secret is read from the tool's output, never passed as
+  an argument, and tool output is never included in errors). Other sources
+  can be added by implementing the same interface.
+- The CLI prints only counts, IDs, mapping names, and status categories. API
+  errors are reported by exception type and HTTP status only; TestRail's
+  response text is never printed.
 - `Credentials` objects redact both fields from `repr()`/`str()`; error
   messages never include credential values or the Authorization header.
 - Result comments are excluded from model `repr()` and never logged. Use
@@ -435,12 +587,14 @@ trigger one bulk `get_cases` request per suite.
 - A per-execution request budget (`http.max_requests_per_execution`) prevents
   runaway API usage.
 
-TestRail credentials are entirely separate from any other tool's credentials.
+TestRail credentials are entirely separate from any other tool's credentials
+(including Anthropic/Claude credentials).
 
 ## Project layout
 
 ```text
 src/testrail_stability_analyzer/
+├── cli.py       command-line interface (also: python -m testrail_stability_analyzer)
 ├── config/      settings.py (typed settings, validation), auth.py (credential providers)
 ├── api/         client.py (read-only client), transport.py (HTTP), errors.py
 ├── models/      metadata.py, execution.py (typed entities), statuses.py (status resolution)
@@ -478,14 +632,20 @@ tests/integration/   reserved for opt-in live tests
   outcome per run with retained retries, grouping per case/application/
   platform, history window and cap, latest known result with coverage, missing
   and not-applicable states, sanitized failure summaries.
+- Targeted collection by Test Plan and Test Run IDs without project-wide
+  discovery, `selection_limited` coverage, and invalid-ID reporting.
+- Result-record cap enforced during retrieval, with incomplete outcomes
+  marked and reported as partial.
+- macOS Keychain credential provider and provider selection in configuration.
+- Command-line interface (`collect plan`, `collect run`, `collect sample`)
+  with a sanitized summary and exit codes.
 
 ### Not implemented yet
 
 - Stability, flakiness, and automation-issue metrics.
 - XML, JSON, and Excel export.
-- Command-line interface.
-- macOS Keychain or other credential providers.
 - Live integration tests.
+- Credential providers other than environment variables and macOS Keychain.
 
 ### Limitations
 
@@ -496,6 +656,13 @@ tests/integration/   reserved for opt-in live tests
 - `include_plan_runs` filtering by creation date uses each run's `created_on`;
   it costs one request per plan in the project (after pre-filtering).
 - `get_results_for_case` supports only `status_id`, matching the TestRail API.
+- The result-record cap marks a run as capped when its stream reaches the cap
+  exactly, since confirming the end would need one more record.
+- `collect sample` only considers plans created within the lookback; with a
+  narrow lookback or many non-matching plans it may find none (it never
+  widens the search silently).
+- Targeted collection cannot confirm that a newer result does not exist in
+  other runs, so its histories are never `complete`.
 - Retry delays are deterministic (no jitter); intended for a single process.
 - **Old completed runs receiving recent results.** It has not been verified
   whether TestRail can add results to completed runs, so the collector does

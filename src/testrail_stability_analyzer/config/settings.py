@@ -29,6 +29,7 @@ DEFAULT_MAX_REQUESTS_PER_EXECUTION: Final = 1000
 DEFAULT_MAX_RETRIES: Final = 3
 DEFAULT_RETRY_BACKOFF_SECONDS: Final = 1.0
 DEFAULT_MAX_RETRY_DELAY_SECONDS: Final = 60.0
+CREDENTIAL_PROVIDER_TYPES: Final = ("environment", "keychain")
 
 # Non-secret settings that may be overridden from the environment.
 ENVIRONMENT_VARIABLES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
@@ -45,6 +46,10 @@ ENVIRONMENT_VARIABLES: Final[Mapping[str, tuple[str, str]]] = MappingProxyType(
         "TESTRAIL_HTTP_MAX_RETRIES": ("http", "max_retries"),
         "TESTRAIL_HTTP_RETRY_BACKOFF_SECONDS": ("http", "retry_backoff_seconds"),
         "TESTRAIL_HTTP_MAX_RETRY_DELAY_SECONDS": ("http", "max_retry_delay_seconds"),
+        "TESTRAIL_MAX_RESULTS": ("collection", "max_results"),
+        "TESTRAIL_CREDENTIAL_PROVIDER": ("credential_provider", "type"),
+        "TESTRAIL_KEYCHAIN_SERVICE": ("credential_provider", "keychain_service"),
+        "TESTRAIL_KEYCHAIN_ACCOUNT": ("credential_provider", "keychain_account"),
     }
 )
 
@@ -160,6 +165,35 @@ class MappingSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionSettings:
+    """Optional targeted selection and result-record cap.
+
+    With no plan or run IDs, runs are discovered project-wide. ``max_results``
+    caps the result records retrieved per execution (``None``: no cap); it is a
+    validation aid, separate from the history window and ``history.max_runs``.
+    """
+
+    plan_ids: tuple[int, ...] = ()
+    run_ids: tuple[int, ...] = ()
+    max_results: int | None = None
+
+    @property
+    def targeted(self) -> bool:
+        return bool(self.plan_ids or self.run_ids)
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialProviderSettings:
+    """Which credential source to use. Holds names of secrets' locations, never secret values."""
+
+    type: str = "environment"
+    keychain_service: str | None = None
+    keychain_account: str | None = None
+    # Optional environment variable holding the username; defaults to the Keychain account.
+    username_variable: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Settings:
     testrail: TestRailSettings
     history: HistorySettings = HistorySettings()
@@ -167,10 +201,21 @@ class Settings:
     naming: NamingSettings = NamingSettings()
     mappings: MappingSettings = MappingSettings()
     filters: FilterSettings = FilterSettings()
+    collection: CollectionSettings = CollectionSettings()
+    credential_provider: CredentialProviderSettings = CredentialProviderSettings()
 
 
-def load_settings(config_path: str | Path | None = None, *, environ: Mapping[str, str] | None = None) -> Settings:
-    """Load settings from an optional TOML file, then apply environment overrides."""
+def load_settings(
+    config_path: str | Path | None = None,
+    *,
+    environ: Mapping[str, str] | None = None,
+    overrides: Mapping[str, Mapping[str, Any]] | None = None,
+) -> Settings:
+    """Load settings from an optional TOML file, then apply environment overrides.
+
+    ``overrides`` (section -> key -> value, e.g. from command-line options) are
+    applied last and validated like the file contents.
+    """
     data: dict[str, Any] = {}
     if config_path is not None:
         path = Path(config_path)
@@ -181,7 +226,12 @@ def load_settings(config_path: str | Path | None = None, *, environ: Mapping[str
             raise ConfigurationError([f"configuration file not found: {path}"]) from None
         except tomllib.TOMLDecodeError as exc:
             raise ConfigurationError([f"configuration file {path} is not valid TOML: {exc}"]) from None
-    return settings_from_mapping(_apply_environment(data, os.environ if environ is None else environ))
+    merged = _apply_environment(data, os.environ if environ is None else environ)
+    for section, values in (overrides or {}).items():
+        target = merged.setdefault(section, {})
+        if isinstance(target, dict):
+            target.update(values)
+    return settings_from_mapping(merged)
 
 
 def settings_from_mapping(data: Mapping[str, Any]) -> Settings:
@@ -214,7 +264,11 @@ class _Parser:
     def parse(self, data: Mapping[str, Any]) -> Settings:
         if not isinstance(data, Mapping):
             raise ConfigurationError(["configuration root must be a table"])
-        self._check_keys(data, "", {"testrail", "history", "http", "naming", "mappings", "filters"})
+        self._check_keys(
+            data,
+            "",
+            {"testrail", "history", "http", "naming", "mappings", "filters", "collection", "credential_provider"},
+        )
 
         testrail = self._section(data, "testrail", {"base_url", "project_id", "suite_id", "allow_insecure_http"})
         allow_http = self._boolean(testrail, "allow_insecure_http", "testrail", default=False)
@@ -282,6 +336,9 @@ class _Parser:
             )
         }
 
+        collection = self._collection(data)
+        credential_provider = self._credential_provider(data)
+
         if self.errors:
             raise ConfigurationError(self.errors)
         assert base_url is not None and project_id is not None  # guaranteed when no errors
@@ -298,7 +355,45 @@ class _Parser:
                 execution_types=execution_types,
             ),
             filters=FilterSettings(**filter_values),
+            collection=collection,
+            credential_provider=credential_provider,
         )
+
+    # -- collection and credential provider ---------------------------------
+
+    def _collection(self, data: Mapping[str, Any]) -> CollectionSettings:
+        section = self._section(data, "collection", {"plan_ids", "run_ids", "max_results"})
+        max_results = self._integer(section, "max_results", "collection", default=0, minimum=0)
+        return CollectionSettings(
+            plan_ids=self._id_list(section, "plan_ids", "collection"),
+            run_ids=self._id_list(section, "run_ids", "collection"),
+            max_results=max_results or None,  # 0 means no cap.
+        )
+
+    def _credential_provider(self, data: Mapping[str, Any]) -> CredentialProviderSettings:
+        path = "credential_provider"
+        section = self._section(data, path, {"type", "keychain_service", "keychain_account", "username_variable"})
+        provider = self._string(section, "type", path) or "environment"
+        if provider not in CREDENTIAL_PROVIDER_TYPES:
+            self.errors.append(f"{path}.type must be one of: {', '.join(CREDENTIAL_PROVIDER_TYPES)}")
+        service = self._string(section, "keychain_service", path)
+        account = self._string(section, "keychain_account", path)
+        username_variable = self._string(section, "username_variable", path)
+        if provider == "keychain":
+            for key, value in (("keychain_service", service), ("keychain_account", account)):
+                if value is None and key not in section:
+                    self.errors.append(f"{path}.{key} is required when {path}.type is 'keychain'")
+        return CredentialProviderSettings(provider, service, account, username_variable)
+
+    def _id_list(self, data: Mapping[str, Any], key: str, path: str) -> tuple[int, ...]:
+        values = data.get(key, [])
+        valid = isinstance(values, list | tuple) and all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 1 for value in values
+        )
+        if not valid:
+            self.errors.append(f"{_join(path, key)} must be a list of positive integer IDs")
+            return ()
+        return tuple(dict.fromkeys(values))  # duplicates removed, order kept
 
     # -- structure ---------------------------------------------------------
 

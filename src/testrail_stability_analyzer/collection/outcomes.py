@@ -53,6 +53,7 @@ def build_outcome(
     *,
     version_field: str | None = None,
     evidence_truncated: bool = False,
+    results_complete: bool = True,
 ) -> RunOutcome:
     ordered = tuple(
         ResolvedResult(result, None if result.status_id is None else resolver.resolve(result.status_id))
@@ -67,6 +68,7 @@ def build_outcome(
         current_status=None if test.status_id is None else resolver.resolve(test.status_id),
         application_version=_application_version(final, ordered, version_field),
         evidence_truncated=evidence_truncated,
+        results_complete=results_complete,
     )
 
 

@@ -354,7 +354,7 @@ def _case_titles(outcomes: Iterable[RunOutcome]) -> dict[int, str]:
     for outcome in sorted(outcomes, key=newest_first, reverse=True):
         title = outcome.test.title
         if title is not None and title.strip():
-            titles.setdefault(outcome.case_id, title.strip())
+            titles.setdefault(outcome.case_id, title)  # kept as entered; strip() only decides availability
     return titles
 
 

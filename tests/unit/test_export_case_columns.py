@@ -185,6 +185,11 @@ class TitleColumnTests(unittest.TestCase):
             self.assertEqual([name for name, _ in sheet.columns][:2], ["Test Case ID", "Test Case Title"])
         self.assertEqual(by_case[100]["Test Case Title"].value, "Case 100")
 
+    def test_title_is_exported_as_entered(self):
+        title = "  Leading and trailing spaces\t "
+        _, by_case = self.overview([outcome(500, 100, rec(1, PASSED, 1), title=title)])
+        self.assertEqual(by_case[100]["Test Case Title"].value, title)
+
     def test_newest_test_title_wins_and_older_titles_fill_gaps(self):
         newest = outcome(400, 100, rec(4000, PASSED, 1), title="Renamed title")
         older = outcome(900, 100, rec(9000, PASSED, 3), title="Original title")

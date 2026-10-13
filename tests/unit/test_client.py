@@ -50,7 +50,7 @@ class ReadOnlyTests(unittest.TestCase):
         client, _, _ = make_client()
         public = {name for name in dir(client) if not name.startswith("_")}
         endpoints = {
-            "get_project", "get_suites", "get_cases", "get_case_fields", "get_case_types", "get_statuses",
+            "get_project", "get_suites", "get_sections", "get_cases", "get_case_fields", "get_case_types", "get_statuses",
             "get_result_fields", "get_plans", "get_plan", "get_runs", "get_run", "get_tests",
             "get_results_for_run", "get_results_for_case",
         }  # fmt: skip

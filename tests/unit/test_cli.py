@@ -2,12 +2,19 @@ import io
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from testrail_stability_analyzer import cli
 
 from . import fake_testrail as fx
 from .fake_testrail import AUTOMATION_ISSUE, FAILED, NOW, PASSED, FakeTestRail, days_ago
 from .fakes import FAKE_KEY, FAKE_USER
+from .test_export_spreadsheet import table
+
+try:
+    import openpyxl
+except ImportError:  # pragma: no cover - exercised only without the optional dependency
+    openpyxl = None
 
 CONFIG = """
 [testrail]
@@ -270,6 +277,149 @@ class SanitizedOutputTests(CliTestCase):
         first = self.run_cli("collect", "plan", "900")
         self.server = build_server()
         self.assertEqual(first, self.run_cli("collect", "plan", "900"))
+
+
+class XmlReportCommandTests(CliTestCase):
+    METADATA = ("get_sections/", "get_cases/", "get_suites/", "get_case_types")
+
+    def setUp(self):
+        super().setUp()
+        self.server.cases[10] = [fx.payloads.case(100, section_id=2), fx.payloads.case(101, section_id=1)]
+        self.server.sections[10] = [fx.payloads.section(1, "Area One"), fx.payloads.section(2, "Feature", parent_id=1)]
+        self.report = self.config.parent / "report.xml"
+
+    def metadata_calls(self):
+        return [call for call in self.server.calls if call.startswith(self.METADATA)]
+
+    def test_report_with_feature_groups(self):
+        code, stdout, _ = self.run_cli("collect", "plan", "900", "--lookback-days", "0", "--xml-report", str(self.report))
+
+        self.assertEqual(code, cli.EXIT_OK, stdout)
+        self.assertIn(f"XML report written: {self.report}", stdout)
+        self.assertIn("Feature / Test Groups: resolved=2; unknown: none", stdout)
+        self.assertEqual(self.metadata_calls(), ["get_cases/1", "get_sections/1", "get_case_types"])
+        self.assertIn("API requests: 9", stdout)
+        xml = self.report.read_text(encoding="utf-8")
+        self.assertIn("<Data ss:Type=\"String\">Feature / Test Group</Data>", xml)
+        self.assertIn("<Data ss:Type=\"String\">Area One/Feature</Data>", xml)
+        self.assertIn("<Data ss:Type=\"String\">Functional</Data>", xml)  # case type 3
+        for sensitive in (SENSITIVE_COMMENT, "abc123", "assets.example.invalid", "Synthetic triage note",
+                          PLAN_NAME, RUN_NAME, FAKE_KEY, FAKE_USER):
+            self.assertNotIn(sensitive, xml)
+
+    def test_collection_only_makes_no_metadata_requests(self):
+        code, stdout, _ = self.run_cli("collect", "plan", "900", "--lookback-days", "0")
+
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertEqual(self.metadata_calls(), [])
+        self.assertNotIn("Feature / Test Groups", stdout)
+        self.assertNotIn("XML report written", stdout)
+
+    def test_disabled_feature_groups(self):
+        self.config.write_text(CONFIG + "\n[report.feature_group]\nenabled = false\n")
+        code, _, _ = self.run_cli("collect", "plan", "900", "--xml-report", str(self.report))
+
+        self.assertEqual(self.metadata_calls(), ["get_case_types"])
+        names, _ = table(self.report.read_text(encoding="utf-8"))
+        self.assertEqual(names[:3], ["Test Case ID", "Test Type", "Defects"])
+
+    def test_budget_exhausted_by_metadata_keeps_the_collection_result(self):
+        code, stdout, _ = self.run_cli(
+            "collect", "plan", "900", "--lookback-days", "0", "--max-requests", "6", "--xml-report", str(self.report)
+        )
+
+        self.assertEqual(code, cli.EXIT_OK, stdout)  # collection itself completed
+        self.assertIn("Request budget exhausted: no", stdout)
+        self.assertIn("Feature / Test Groups: resolved=0; unknown: not_fetched=2", stdout)
+        xml = self.report.read_text(encoding="utf-8")
+        self.assertIn("Unknown (not fetched)", xml)
+        self.assertIn("Test Type shows TestRail type IDs", xml)
+        # Stability results are exported unchanged.
+        self.assertIn('<Cell ss:StyleID="yellow"><Data ss:Type="String">Automation Issue</Data></Cell>', xml)
+
+    def test_invalid_report_path_is_rejected_before_requests(self):
+        for path in (self.config.parent / "missing" / "report.xml", self.config.parent):
+            with self.subTest(path=path):
+                code, _, stderr = self.run_cli("collect", "plan", "900", "--xml-report", str(path))
+                self.assertEqual(code, cli.EXIT_INVALID_CONFIGURATION)
+                self.assertIn("invalid report path", stderr)
+        self.assertEqual(self.server.calls, [])
+
+
+@unittest.skipUnless(openpyxl, "openpyxl is not installed")
+class XlsxReportCommandTests(CliTestCase):
+    def setUp(self):
+        super().setUp()
+        self.server.cases[10] = [fx.payloads.case(100, section_id=2), fx.payloads.case(101, section_id=1)]
+        self.server.sections[10] = [fx.payloads.section(1, "Area One"), fx.payloads.section(2, "Feature", parent_id=1)]
+        self.xlsx = self.config.parent / "report.xlsx"
+        self.xml = self.config.parent / "report.xml"
+
+    def metadata_calls(self):
+        return [call for call in self.server.calls if call.startswith(XmlReportCommandTests.METADATA)]
+
+    def test_xlsx_report(self):
+        code, stdout, _ = self.run_cli(
+            "collect", "plan", "900", "--lookback-days", "0", "--xlsx-report", str(self.xlsx)
+        )
+
+        self.assertEqual(code, cli.EXIT_OK, stdout)
+        self.assertIn(f"XLSX report written: {self.xlsx}", stdout)
+        workbook = openpyxl.load_workbook(self.xlsx)
+        self.assertEqual(workbook.sheetnames, ["Stability Overview", "Stability Details", "Report Info"])
+        overview = workbook["Stability Overview"]
+        self.assertEqual(
+            [cell.value for cell in overview[1]],
+            ["Test Case ID", "Feature / Test Group", "Test Type", "Defects", "App A Platform X", "App A Platform Y"],
+        )
+        self.assertEqual(overview["B2"].value, "Area One/Feature")
+        self.assertEqual(overview["E2"].value, "Automation Issue")
+        texts = " ".join(str(c.value) for ws in workbook.worksheets for row in ws.iter_rows() for c in row)
+        for sensitive in (SENSITIVE_COMMENT, "abc123", "Synthetic triage note", PLAN_NAME, RUN_NAME, FAKE_KEY):
+            self.assertNotIn(sensitive, texts)
+
+    def test_xml_and_xlsx_share_one_metadata_fetch(self):
+        code, stdout, _ = self.run_cli(
+            "collect", "plan", "900", "--lookback-days", "0",
+            "--xml-report", str(self.xml), "--xlsx-report", str(self.xlsx),
+        )  # fmt: skip
+
+        self.assertEqual(code, cli.EXIT_OK, stdout)
+        self.assertEqual(self.metadata_calls(), ["get_cases/1", "get_sections/1", "get_case_types"])
+        self.assertIn("API requests: 9", stdout)
+        self.assertIn("XML report written", stdout)
+        self.assertIn("XLSX report written", stdout)
+        xml_names, xml_rows = table(self.xml.read_text(encoding="utf-8"))
+        details = openpyxl.load_workbook(self.xlsx)["Stability Details"]
+        self.assertEqual([cell.value for cell in details[1]], xml_names)
+        self.assertEqual(details.max_row - 1, len(xml_rows))
+
+    def test_invalid_xlsx_paths(self):
+        for argv in (
+            ["--xlsx-report", str(self.config.parent / "missing" / "r.xlsx")],
+            ["--xml-report", str(self.xml), "--xlsx-report", str(self.xml)],
+        ):
+            with self.subTest(argv=argv):
+                code, _, stderr = self.run_cli("collect", "plan", "900", *argv)
+                self.assertEqual(code, cli.EXIT_INVALID_CONFIGURATION)
+                self.assertIn("invalid report path", stderr)
+        self.assertEqual(self.server.calls, [])
+
+    def test_collection_only_still_makes_no_metadata_requests(self):
+        self.run_cli("collect", "plan", "900")
+        self.assertEqual(self.metadata_calls(), [])
+
+
+class MissingOpenpyxlTests(CliTestCase):
+    def test_missing_openpyxl_is_reported_before_requests(self):
+        with mock.patch.object(cli, "xlsx_available", return_value=False):
+            path = self.config.parent / "report.xlsx"
+            code, _, stderr = self.run_cli("collect", "plan", "900", "--xlsx-report", str(path))
+
+        self.assertEqual(code, cli.EXIT_INVALID_CONFIGURATION)
+        self.assertIn('pip install "openpyxl>=3.1,<4"', stderr)
+        self.assertEqual(self.server.calls, [])
+        self.assertFalse((self.config.parent / "report.xlsx").exists())
 
 
 if __name__ == "__main__":

@@ -6,10 +6,19 @@ Commands::
     testrail-stability-analyzer collect run RUN_ID [RUN_ID ...] [--plan-id PLAN_ID ...]
     testrail-stability-analyzer collect sample
 
+    ... [--xml-report PATH] [--xlsx-report PATH]
+
 The CLI runs :class:`~.collection.HistoricalCollector` and prints counts,
 TestRail IDs, configured mapping names, and status categories only. Plan and
-run names, comments, defect identifiers, and credentials are never printed,
-and nothing is written to disk.
+run names, comments, defect identifiers, and credentials are never printed.
+
+Nothing is written to disk unless a report is requested: ``--xml-report``
+(Excel-compatible XML Spreadsheet 2003, standard library) and/or
+``--xlsx-report`` (native XLSX, needs the optional ``openpyxl`` package). The
+Feature / Test Group of each case is reconstructed from TestRail sections
+(unless ``report.feature_group.enabled`` is false). Section metadata and case
+types are fetched once per invocation and only for reports; collection on its
+own makes no extra requests.
 """
 
 from __future__ import annotations
@@ -24,8 +33,10 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, TextIO
 
-from .api import HttpTransport, TestRailClient, TestRailError, TestRailHTTPError
+from .analysis import analyze
+from .api import HttpTransport, TestRailClient, TestRailError, TestRailHTTPError, TestRailRequestBudgetExceeded
 from .collection import (
+    CaseMetadataCache,
     CollectionReport,
     DimensionState,
     DimensionValue,
@@ -33,6 +44,7 @@ from .collection import (
     ResolvedResult,
     RunDiscovery,
     SamplePlanSelection,
+    enrich_feature_groups,
 )
 from .config import (
     ConfigurationError,
@@ -42,6 +54,8 @@ from .config import (
     load_settings,
 )
 from .config.settings import CREDENTIAL_PROVIDER_TYPES
+from .export import XlsxUnavailableError, build_report, render_spreadsheet, render_xlsx, xlsx_available
+from .export.xlsx import INSTALL_HINT
 from .models import StatusResolver
 
 EXIT_OK: Final = 0
@@ -74,6 +88,18 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--max-requests", type=_positive_int, help="maximum API requests, including retries")
     common.add_argument("--window-days", type=_positive_int, help="history window in days")
     common.add_argument("--lookback-days", type=_non_negative_int, help="lookback for results in days; 0 = no limit")
+    common.add_argument(
+        "--xml-report",
+        type=Path,
+        metavar="PATH",
+        help="write an Excel-compatible XML Spreadsheet 2003 report (keep it out of version control)",
+    )
+    common.add_argument(
+        "--xlsx-report",
+        type=Path,
+        metavar="PATH",
+        help="write a native XLSX report; needs openpyxl (keep it out of version control)",
+    )
 
     plan = targets.add_parser("plan", parents=[common], help="collect selected Test Plans")
     plan.add_argument("plan_ids", nargs="+", type=_positive_int, metavar="PLAN_ID")
@@ -119,6 +145,15 @@ def main(
     except ConfigurationError as exc:
         err.write("invalid configuration:\n" + "".join(f"  - {problem}\n" for problem in exc.errors))
         return EXIT_INVALID_CONFIGURATION
+    report_problem = _report_path_problem(args.xml_report) or _report_path_problem(args.xlsx_report)
+    if args.xml_report is not None and args.xml_report == args.xlsx_report:
+        report_problem = "--xml-report and --xlsx-report must be different files"
+    if report_problem is not None:
+        err.write(f"invalid report path: {report_problem}\n")
+        return EXIT_INVALID_CONFIGURATION
+    if args.xlsx_report is not None and not xlsx_available():
+        err.write(f"{INSTALL_HINT}\n")
+        return EXIT_INVALID_CONFIGURATION
     try:
         return _collect(args, settings, out, err, environ, transport, clock)
     except CredentialError as exc:
@@ -157,15 +192,65 @@ def _collect(
         collection = dataclasses.replace(settings.collection, plan_ids=(sample.plan.id,), run_ids=())
         settings = dataclasses.replace(settings, collection=collection)
         plans = {sample.plan.id: sample.plan}
-    report = HistoricalCollector(client, settings, resolver, clock=lambda: now, plans=plans).collect()
+    cache = CaseMetadataCache(client, settings.testrail.project_id)
+    report = HistoricalCollector(client, settings, resolver, clock=lambda: now, plans=plans, case_cache=cache).collect()
+    outputs: list[tuple[str, Path, bytes]] = []
+    if args.xml_report is not None or args.xlsx_report is not None:
+        # Metadata is fetched once and shared by both formats.
+        if settings.report.feature_group.enabled:
+            report = enrich_feature_groups(report, client, settings, cache)
+        notes: list[str] = []
+        case_types = _case_types(client, notes)
+        report = dataclasses.replace(report, requests_made=client.requests_made)
+        analysis = analyze(report, settings)
+        content = build_report(report, analysis, settings, case_types=case_types, notes=notes)
+        if args.xml_report is not None:
+            xml = render_spreadsheet(report, analysis, settings, content=content)
+            outputs.append(("XML", args.xml_report, xml.encode("utf-8")))
+        if args.xlsx_report is not None:
+            try:
+                outputs.append(("XLSX", args.xlsx_report, render_xlsx(report, analysis, settings, content=content)))
+            except XlsxUnavailableError as exc:
+                err.write(f"{exc}\n")
+                return EXIT_INVALID_CONFIGURATION
     if sample is not None:
         out.write(_sample_lines(sample, None))
     out.write(format_summary(report, settings))
+    for label, path, data in outputs:
+        try:
+            path.write_bytes(data)
+        except OSError as exc:
+            err.write(f"could not write the {label} report: {exc.strerror or type(exc).__name__}\n")
+            return EXIT_UNEXPECTED
+        out.write(f"{label} report written: {path}\n")
     discovery = report.discovery
     if discovery.invalid_selections and not discovery.included:
         err.write("none of the selected plans or runs could be collected\n")
         return EXIT_API_ERROR
     return EXIT_PARTIAL if report.is_partial else EXIT_OK
+
+
+def _report_path_problem(path: Path | None) -> str | None:
+    """Checked before any request, so an unusable path does not waste the collection."""
+    if path is None:
+        return None
+    if path.is_dir():
+        return f"{path} is a directory"
+    if not path.parent.is_dir():
+        return f"directory {path.parent} does not exist"
+    return None
+
+
+def _case_types(client: TestRailClient, notes: list[str]) -> dict[int, str] | None:
+    """Case type names for the Test Type column; ``None`` (type IDs are shown) when they cannot be fetched."""
+    try:
+        return {case_type.id: case_type.name for case_type in client.get_case_types()}
+    except TestRailRequestBudgetExceeded:
+        notes.append("case types not fetched (request budget exhausted); Test Type shows TestRail type IDs")
+    except TestRailError as exc:
+        status = f" HTTP {exc.status}" if isinstance(exc, TestRailHTTPError) and isinstance(exc.status, int) else ""
+        notes.append(f"case types could not be fetched ({type(exc).__name__}{status}); Test Type shows type IDs")
+    return None
 
 
 def _overrides(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
@@ -278,6 +363,11 @@ def format_summary(report: CollectionReport, settings: Settings) -> str:
     add("  coverage: " + _counts(Counter(str(h.coverage) for h in report.histories)))
     add("  states: " + _counts(Counter(str(h.state) for h in report.histories)))
 
+    if report.case_groups is not None:
+        groups = report.case_groups.values()
+        unknown = Counter(str(group.state) for group in groups if not group.is_resolved)
+        resolved = sum(1 for group in groups if group.is_resolved)
+        add(f"Feature / Test Groups: resolved={resolved}; unknown: {_counts(unknown)}")
     add(f"API requests: {report.requests_made} (budget: {settings.http.max_requests_per_execution})")
     add(f"Request budget exhausted: {_yes(report.budget_exhausted)}")
     if report.conflicts:

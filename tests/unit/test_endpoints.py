@@ -2,7 +2,18 @@ import unittest
 from datetime import UTC, datetime, timedelta, timezone
 
 from testrail_stability_analyzer.api import TestRailResponseError
-from testrail_stability_analyzer.models import Case, CustomField, Plan, Project, Result, Run, Status, Suite, Test
+from testrail_stability_analyzer.models import (
+    Case,
+    CustomField,
+    Plan,
+    Project,
+    Result,
+    Run,
+    Section,
+    Status,
+    Suite,
+    Test,
+)
 
 from . import payloads
 from .fakes import make_client, ok
@@ -19,6 +30,7 @@ class GetOnlyTests(unittest.TestCase):
         calls = {
             "get_project": (lambda c: c.get_project(1), payloads.project()),
             "get_suites": (lambda c: c.get_suites(1), []),
+            "get_sections": (lambda c: list(c.get_sections(1)), []),
             "get_cases": (lambda c: list(c.get_cases(1)), []),
             "get_case_fields": (lambda c: c.get_case_fields(), []),
             "get_case_types": (lambda c: c.get_case_types(), []),
@@ -119,6 +131,21 @@ class CollectionEndpointTests(unittest.TestCase):
         self.assertTrue(all(isinstance(case, Case) for case in cases))
         self.assertEqual([case.id for case in cases], [1, 2, 3])
         self.assertEqual(paths(transport), ["get_cases/1&suite_id=10", "get_cases/1&suite_id=10&offset=2"])
+
+    def test_get_sections_paginates_and_parses(self):
+        client, transport, _ = make_client(
+            ok({"sections": [payloads.section(1, "Top")], "_links": {"next": "/api/v2/get_sections/1&suite_id=10&offset=1"}}),
+            ok({"sections": [payloads.section(2, "Child", parent_id=1)], "_links": {"next": None}}),
+        )
+        sections = list(client.get_sections(1, suite_id=10))
+        self.assertTrue(all(isinstance(section, Section) for section in sections))
+        self.assertEqual([(s.id, s.parent_id) for s in sections], [(1, None), (2, 1)])
+        self.assertEqual(paths(transport), ["get_sections/1&suite_id=10", "get_sections/1&suite_id=10&offset=1"])
+
+    def test_get_sections_legacy_list_without_suite(self):
+        client, transport, _ = make_client(ok([payloads.section(1, "Top")]))
+        self.assertEqual([s.name for s in client.get_sections(1)], ["Top"])
+        self.assertEqual(paths(transport), ["get_sections/1"])
 
     def test_collection_methods_are_lazy_but_validate_eagerly(self):
         client, transport, _ = make_client(ok({"cases": []}))

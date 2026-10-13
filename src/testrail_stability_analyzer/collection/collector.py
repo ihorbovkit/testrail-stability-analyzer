@@ -36,6 +36,7 @@ from ..api import TestRailClient, TestRailRequestBudgetExceeded
 from ..api.client import MAX_PAGE_LIMIT
 from ..config.settings import DimensionMapping, Settings
 from ..models import Plan, Result, StatusResolver, Test
+from .case_metadata import CaseMetadataCache
 from .discovery import RunDiscovery, created_after_cutoff
 from .history import Group, build_histories, group_of
 from .models import (
@@ -63,13 +64,18 @@ class HistoricalCollector:
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         plans: Mapping[int, Plan] | None = None,
+        case_cache: CaseMetadataCache | None = None,
     ) -> None:
-        """``plans``: already fetched selected plans (with entries), reused by targeted collection."""
+        """``plans``: already fetched selected plans (with entries), reused by targeted collection.
+
+        ``case_cache``: bulk case metadata shared with later steps (e.g. Feature / Test Group enrichment).
+        """
         self._client = client
         self._settings = settings
         self._resolver = resolver
         self._clock = clock
         self._plans = plans
+        self._case_cache = case_cache or CaseMetadataCache(client, settings.testrail.project_id)
 
     def collect(self) -> CollectionReport:
         now = self._clock()
@@ -83,7 +89,9 @@ class HistoricalCollector:
             discovery = discoverer.discover_selected(selection.plan_ids, selection.run_ids, plans=self._plans)
         else:
             discovery = discoverer.discover(lookback_start)
-        session = _Session(self._client, self._settings, self._resolver, window_start, lookback_start)
+        session = _Session(
+            self._client, self._settings, self._resolver, window_start, lookback_start, self._case_cache
+        )
         return session.run(now, discovery)
 
 
@@ -97,8 +105,10 @@ class _Session:
         resolver: StatusResolver,
         window_start: datetime,
         lookback_start: datetime | None,
+        case_cache: CaseMetadataCache,
     ) -> None:
         self.client = client
+        self.case_cache = case_cache
         self.settings = settings
         self.resolver = resolver
         self.window_start = window_start
@@ -288,13 +298,11 @@ class _Session:
                 suites_by_case.setdefault(outcome.case_id, suite_id)
         missing = {case: suite for case, suite in suites_by_case.items() if case not in values}
         for suite_id in sorted(set(missing.values()), key=lambda suite: suite or 0):
-            cases = self._call(
-                lambda: list(self.client.get_cases(self.settings.testrail.project_id, suite_id=suite_id))
-            )
+            cases = self._call(lambda: self.case_cache.cases(suite_id))
             if cases is None:
                 self.applicability_unchecked.update(case for case, suite in missing.items() if suite == suite_id)
                 continue
-            for case in cases:
+            for case in cases.values():
                 if case.id in missing:
                     value = field_value(case, field, _MISSING)
                     if value is not _MISSING:

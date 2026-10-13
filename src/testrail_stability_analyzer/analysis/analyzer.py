@@ -46,4 +46,5 @@ def analyze(report: CollectionReport, settings: Settings) -> AnalysisReport:
         defect_coverage=coverage,
         orphan_records_with_defects=orphans,
         limitations=tuple(dict.fromkeys(limitations)),
+        case_groups=report.case_groups,
     )

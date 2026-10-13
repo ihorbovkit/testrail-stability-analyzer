@@ -34,6 +34,7 @@ from ..models import (
     Project,
     Result,
     Run,
+    Section,
     Status,
     Suite,
     Test,
@@ -126,6 +127,11 @@ class TestRailClient:
 
     def get_suites(self, project_id: int) -> list[Suite]:
         return self._list_models(f"get_suites/{_id(project_id, 'project_id')}", "suites", Suite.from_api)
+
+    def get_sections(self, project_id: int, *, suite_id: int | None = None) -> Iterator[Section]:
+        """Sections (case hierarchy) of a project. ``suite_id`` is required by TestRail for multi-suite projects."""
+        params = _filters(suite_id=suite_id)
+        return self._iter_models(f"get_sections/{_id(project_id, 'project_id')}", "sections", Section.from_api, params)
 
     def get_case_fields(self) -> list[CustomField]:
         """Custom case field definitions (all projects; see ``CustomField.applies_to_project``)."""

@@ -96,6 +96,9 @@ class FakeTestRail:
         self.tests = {}  # run id -> [test payloads]
         self.results = {}  # run id -> [result payloads]
         self.cases = {}  # suite id -> [case payloads]
+        self.sections = {}  # suite id -> [section payloads]
+        self.suites = [payloads.suite()]
+        self.case_types = [{"id": 1, "name": "Automated", "is_default": False}, {"id": 3, "name": "Functional"}]
         self.page_size = page_size
         self.calls = []  # endpoint paths, e.g. "get_tests/501"
         self.params = []  # query parameters per call
@@ -195,6 +198,15 @@ class FakeTestRail:
 
     def _get_cases(self, project_id, params):
         return self._page("cases", self.cases.get(int(params.get("suite_id", 0)), []), params)
+
+    def _get_sections(self, project_id, params):
+        return self._page("sections", self.sections.get(int(params.get("suite_id", 0)), []), params)
+
+    def _get_suites(self, project_id, params):
+        return self.suites
+
+    def _get_case_types(self, params):
+        return self.case_types
 
 
 def _matches(item, params):

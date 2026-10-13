@@ -10,6 +10,7 @@ from testrail_stability_analyzer.models import (
     Project,
     Result,
     Run,
+    Section,
     Status,
     Suite,
     Test,
@@ -32,6 +33,15 @@ class MetadataModelTests(unittest.TestCase):
         suite = Suite.from_api(payloads.suite(is_completed=True, completed_on=payloads.T0))
         self.assertEqual((suite.id, suite.project_id, suite.name), (10, 1, "Regression"))
         self.assertEqual(suite.completed_on, T0_UTC)
+
+    def test_section(self):
+        section = Section.from_api(payloads.section(5, "Child", parent_id=2, depth=1, custom_note="kept"))
+        self.assertEqual((section.id, section.name, section.parent_id, section.suite_id), (5, "Child", 2, 10))
+        self.assertEqual((section.depth, section.display_order), (1, 5))
+        self.assertEqual(dict(section.extra), {"custom_note": "kept"})
+        self.assertIsNone(Section.from_api(payloads.section(1, "Top")).parent_id)
+        with self.assertRaises(ModelError):
+            Section.from_api({"id": 1})
 
     def test_case_type(self):
         case_type = CaseType.from_api({"id": 3, "name": "Automated", "is_default": False})

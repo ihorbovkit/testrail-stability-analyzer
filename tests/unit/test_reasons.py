@@ -97,6 +97,27 @@ class BoundaryTests(unittest.TestCase):
                 with self.subTest(block=block, separator=separator):
                     self.assertEqual(reason(comment), "outage")
 
+    def test_html_headings_and_rules_end_the_section(self):
+        for boundary in (
+            "<h2>Details</h2>",
+            '<H4 class="x">Details</H4>',
+            "&lt;h3&gt;Details&lt;/h3&gt;",
+            "<hr>",
+            "<hr/>",
+            "\n---\n",
+            "\n***\n",
+            "\n___\n",
+        ):
+            for separator in ("", " ", "\n", "<br>"):
+                comment = f"BLOCKED REASON: outage{separator}{boundary}SECRET-TAIL"
+                with self.subTest(boundary=boundary, separator=separator):
+                    self.assertEqual(reason(comment), "outage")
+
+    def test_header_inside_an_html_heading(self):
+        comment = "<h3>BLOCKED REASON</h3><p>Device lab closed</p><h3>Logs</h3>SECRET-TAIL"
+        self.assertEqual(reason(comment), "Device lab closed")
+        self.assertIsNone(reason("BLOCKED REASON:<h2>Details</h2>SECRET-TAIL"))
+
     def test_header_followed_only_by_a_code_block_yields_nothing(self):
         self.assertIsNone(reason("BLOCKED REASON:<pre>INTERNAL-LOG</pre>"))
         self.assertIsNone(reason("<p>BLOCKED REASON:</p><pre>INTERNAL-LOG</pre>"))

@@ -3,8 +3,9 @@
 Only text following a configured header (e.g. ``BLOCKED REASON:``) is used;
 a comment without one yields no reason, never the comment itself. Section
 boundaries are found on the markup-free text before anything is collapsed:
-a section ends at a blank line, the next labelled section or heading, a code
-block (markdown fence or HTML ``<pre>``/``<code>``), or the first log or
+a section ends at a blank line, the next labelled section or heading
+(markdown or HTML ``<h1>``-``<h6>``), a horizontal rule, a code block
+(markdown fence or HTML ``<pre>``/``<code>``), or the first log or
 stack-trace line. The section is then stripped of
 asset references, redacted (see :mod:`.sanitize`), collapsed to one line, and
 truncated. Redaction is best-effort, so reasons must still not be sent to
@@ -33,6 +34,10 @@ _CODE_FENCE: Final = re.compile(r"^\s*(?:```|~~~)")
 # Opening of an HTML preformatted/code block, also entity-encoded; replaced by a fence line before
 # markup removal, which would otherwise turn it into an ordinary line break.
 _HTML_CODE_BLOCK: Final = re.compile(r"(?:<|&lt;)\s*(?:pre|code|samp|xmp|listing)\b(?:[^>&]|&(?!gt;))*(?:>|&gt;)", re.I)
+# HTML headings and horizontal rules, also entity-encoded; kept as markdown markers for the same reason.
+_HTML_HEADING: Final = re.compile(r"(?:<|&lt;)\s*h[1-6]\b(?:[^>&]|&(?!gt;))*(?:>|&gt;)", re.I)
+_HTML_RULE: Final = re.compile(r"(?:<|&lt;)\s*hr\b(?:[^>&]|&(?!gt;))*(?:>|&gt;)", re.I)
+_RULE: Final = re.compile(r"^\s*(?:-{3,}|\*{3,}|_{3,}|={3,})\s*$")
 _LOG_LINE: Final = re.compile(
     r"^\s*(?:"
     r"Traceback \(most recent call last\)"
@@ -66,7 +71,8 @@ def extract_reason(comment: str | None, headers: Sequence[str], *, max_length: i
         raise ValueError("max_length must be >= 1")
     if not comment or not headers:
         return None
-    lines = plain_text(_HTML_CODE_BLOCK.sub("\n```\n", comment)).split("\n")
+    marked = _HTML_RULE.sub("\n---\n", _HTML_HEADING.sub("\n# ", _HTML_CODE_BLOCK.sub("\n```\n", comment)))
+    lines = plain_text(marked).split("\n")
     pattern = _header_pattern(headers)
     for index, line in enumerate(lines):
         match = pattern.match(line)
@@ -101,7 +107,11 @@ def _section(rest: str, following: Sequence[str], header: re.Pattern[str]) -> st
 
 def _ends_section(line: str, header: re.Pattern[str]) -> bool:
     return bool(
-        header.match(line) or _NEXT_SECTION.match(line) or _CODE_FENCE.match(line) or _LOG_LINE.match(line)
+        header.match(line)
+        or _NEXT_SECTION.match(line)
+        or _CODE_FENCE.match(line)
+        or _RULE.match(line)
+        or _LOG_LINE.match(line)
     )
 
 

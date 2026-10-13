@@ -35,7 +35,10 @@ def rec(result_id, status_id, days, defects=None, version=None):
     return (result_id, status_id, days, defects, version)
 
 
-def outcome(run_id, case_id, *records, app=APP_A, platform=PLAT_X, plan_id=None, complete=True, test_status=None):
+def outcome(
+    run_id, case_id, *records, app=APP_A, platform=PLAT_X, plan_id=None, complete=True, test_status=None, title=None
+):
+    """``title`` defaults to "Case <case_id>"; pass ``""`` for a test without a title."""
     test_id = run_id * 1000 + case_id
     source = DiscoveredRun(
         Run(id=run_id, name=f"Run {run_id}", plan_id=plan_id), RunClassification(app, platform), RunDecision.INCLUDED
@@ -52,7 +55,8 @@ def outcome(run_id, case_id, *records, app=APP_A, platform=PLAT_X, plan_id=None,
         )
         for result_id, status_id, days, defects, version in records
     ]
-    test = Test(id=test_id, case_id=case_id, run_id=run_id, status_id=test_status)
+    title = f"Case {case_id}" if title is None else title or None
+    test = Test(id=test_id, case_id=case_id, run_id=run_id, status_id=test_status, title=title)
     return build_outcome(source, test, results, RESOLVER, results_complete=complete)
 
 

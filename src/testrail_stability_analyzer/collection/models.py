@@ -207,6 +207,26 @@ class Applicability(StrEnum):
     NOT_CONFIGURED = "not_configured"
 
 
+class ApplicabilityValueState(StrEnum):
+    """Whether the configured applicability case field could be read for a case."""
+
+    READ = "read"  # read from get_tests or get_cases; the value may be empty (not set)
+    NOT_FETCHED = "not_fetched"  # the get_cases fallback was not made (request budget)
+    CASE_NOT_FOUND = "case_not_found"  # not on the case's tests, and the case is not returned by get_cases
+
+
+@dataclass(frozen=True, slots=True)
+class CaseApplicability:
+    """The raw applicability value of one case: option IDs or strings as text, in TestRail order."""
+
+    state: ApplicabilityValueState
+    values: tuple[str, ...] = ()
+
+    @property
+    def is_set(self) -> bool:
+        return self.state is ApplicabilityValueState.READ and bool(self.values)
+
+
 class Coverage(StrEnum):
     """How far the latest-known result is backed by the scan."""
 
@@ -347,6 +367,8 @@ class CollectionReport:
     results_capped: bool = False  # the cap was reached; further records were not retrieved
     # Feature / Test Group per case ID; ``None`` when section metadata was not requested.
     case_groups: Mapping[int, CaseGroup] | None = None
+    # Applicability value per case ID; ``None`` when mappings.custom_fields.applicability is not configured.
+    case_applicability: Mapping[int, CaseApplicability] | None = None
 
     @property
     def is_partial(self) -> bool:

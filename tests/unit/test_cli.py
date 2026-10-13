@@ -333,7 +333,7 @@ class XmlReportCommandTests(CliTestCase):
 
         self.assertEqual(self.metadata_calls(), ["get_case_types"])
         names, _ = table(self.report.read_text(encoding="utf-8"))
-        self.assertEqual(names[:3], ["Test Case ID", "Test Type", "Defects"])
+        self.assertEqual(names[:4], ["Test Case ID", "Test Case Title", "Test Type", "Defects"])
 
     def test_budget_exhausted_by_metadata_keeps_the_collection_result(self):
         code, stdout, _ = self.run_cli(
@@ -397,10 +397,12 @@ class XlsxReportCommandTests(CliTestCase):
         overview = workbook["Stability Overview"]
         self.assertEqual(
             [cell.value for cell in overview[1]],
-            ["Test Case ID", "Feature / Test Group", "Test Type", "Defects", "App A Platform X", "App A Platform Y"],
-        )
-        self.assertEqual(overview["B2"].value, "Area One/Feature")
-        self.assertEqual(overview["E2"].value, "Automation Issue")
+            ["Test Case ID", "Test Case Title", "Feature / Test Group", "Test Type", "Defects",
+             "App A Platform X", "App A Platform Y"],
+        )  # fmt: skip
+        self.assertEqual(overview["B2"].value, "Case 100")  # the title from get_tests
+        self.assertEqual(overview["C2"].value, "Area One/Feature")
+        self.assertEqual(overview["F2"].value, "Automation Issue")
         texts = " ".join(str(c.value) for ws in workbook.worksheets for row in ws.iter_rows() for c in row)
         for sensitive in (SENSITIVE_COMMENT, "abc123", "Synthetic triage note", PLAN_NAME, RUN_NAME, FAKE_KEY):
             self.assertNotIn(sensitive, texts)

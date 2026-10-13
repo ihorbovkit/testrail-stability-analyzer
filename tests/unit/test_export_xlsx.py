@@ -63,7 +63,7 @@ class WorkbookTests(unittest.TestCase):
 
     def test_overview_columns_rows_and_statuses(self):
         headers, rows = by_header(self.workbook["Stability Overview"])
-        self.assertEqual(headers[5:], ["App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"])
+        self.assertEqual(headers[6:], ["App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"])
         self.assertEqual(list(rows), list(range(100, 109)))  # one row per case, numeric IDs
         cases = {
             100: ("Passed", "C6EFCE"),
@@ -117,7 +117,7 @@ class WorkbookTests(unittest.TestCase):
 
     def test_details_numeric_percentages_and_dates(self):
         headers, rows = by_header(self.workbook["Stability Details"])
-        self.assertEqual(len(headers), 5 + 4 * 9)
+        self.assertEqual(len(headers), 6 + 4 * 10)
         row = rows[102]
         rate = row["App A | Platform X: Pass Rate"]
         self.assertEqual((rate.value, rate.number_format), (0.6, "0.0%"))
@@ -140,7 +140,7 @@ class WorkbookTests(unittest.TestCase):
                 self.assertTrue(all(cell.font.bold for cell in ws[1]))
                 self.assertGreater(ws.column_dimensions["A"].width, 10)
         overview = self.workbook["Stability Overview"]
-        self.assertEqual(overview.max_column, 9)  # compact: no per-metric columns
+        self.assertEqual(overview.max_column, 10)  # compact: no per-metric columns
 
     def test_report_info(self):
         ws = self.workbook["Report Info"]

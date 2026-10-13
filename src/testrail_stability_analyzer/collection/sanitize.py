@@ -40,6 +40,28 @@ _SUBSTITUTIONS: Final[tuple[tuple[re.Pattern[str], str], ...]] = (
     (re.compile(r"(?:[A-Za-z]:\\|~?/)(?:[^\s/\\]+[/\\])+[^\s/\\]*"), "[path]"),
 )
 _WHITESPACE: Final = re.compile(r"\s+")
+# Block-level tags that end a line, so section boundaries survive markup removal.
+_LINE_BREAK_TAGS: Final = re.compile(r"<\s*/?\s*(?:br|p|div|li|tr|h[1-6]|pre|ul|ol|table|blockquote)\b[^>]*>", re.I)
+
+
+def plain_text(comment: str) -> str:
+    """``comment`` without markup, HTML entities unescaped, line breaks kept; not redacted.
+
+    Block-level tags become line breaks. Plain text, not HTML (see :func:`sanitize_comment`).
+    """
+    # Strip markup, unescape, then strip markup that only appears after unescaping
+    # (e.g. "&lt;img onerror=...&gt;").
+    text = _LINE_BREAK_TAGS.sub("\n", _SCRIPT_OR_STYLE.sub(" ", comment))
+    text = html.unescape(_MARKUP.sub(" ", text))
+    text = _MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", text))
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def redact(text: str) -> str:
+    """Replace URLs, emails, credentials, session and other identifiers, tokens, and paths with placeholders."""
+    for pattern, replacement in _SUBSTITUTIONS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 def sanitize_comment(comment: str | None, *, max_length: int = DEFAULT_MAX_LENGTH) -> str | None:
@@ -52,13 +74,7 @@ def sanitize_comment(comment: str | None, *, max_length: int = DEFAULT_MAX_LENGT
         raise ValueError("max_length must be >= 1")
     if not comment:
         return None
-    # Strip markup, unescape, then strip markup that only appears after unescaping
-    # (e.g. "&lt;img onerror=...&gt;").
-    text = html.unescape(_MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", comment)))
-    text = _MARKUP.sub(" ", _SCRIPT_OR_STYLE.sub(" ", text))
-    for pattern, replacement in _SUBSTITUTIONS:
-        text = pattern.sub(replacement, text)
-    text = _WHITESPACE.sub(" ", text).strip()
+    text = _WHITESPACE.sub(" ", redact(plain_text(comment))).strip()
     if not text:
         return None
     if len(text) > max_length:

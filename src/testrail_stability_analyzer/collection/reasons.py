@@ -4,7 +4,8 @@ Only text following a configured header (e.g. ``BLOCKED REASON:``) is used;
 a comment without one yields no reason, never the comment itself. Section
 boundaries are found on the markup-free text before anything is collapsed:
 a section ends at a blank line, the next labelled section or heading, a code
-block, or the first log or stack-trace line. The section is then stripped of
+block (markdown fence or HTML ``<pre>``/``<code>``), or the first log or
+stack-trace line. The section is then stripped of
 asset references, redacted (see :mod:`.sanitize`), collapsed to one line, and
 truncated. Redaction is best-effort, so reasons must still not be sent to
 external services.
@@ -29,6 +30,9 @@ _NEXT_SECTION: Final = re.compile(
     r"|\s*#{1,6}\s)"
 )
 _CODE_FENCE: Final = re.compile(r"^\s*(?:```|~~~)")
+# Opening of an HTML preformatted/code block, also entity-encoded; replaced by a fence line before
+# markup removal, which would otherwise turn it into an ordinary line break.
+_HTML_CODE_BLOCK: Final = re.compile(r"(?:<|&lt;)\s*(?:pre|code|samp|xmp|listing)\b(?:[^>&]|&(?!gt;))*(?:>|&gt;)", re.I)
 _LOG_LINE: Final = re.compile(
     r"^\s*(?:"
     r"Traceback \(most recent call last\)"
@@ -62,7 +66,7 @@ def extract_reason(comment: str | None, headers: Sequence[str], *, max_length: i
         raise ValueError("max_length must be >= 1")
     if not comment or not headers:
         return None
-    lines = plain_text(comment).split("\n")
+    lines = plain_text(_HTML_CODE_BLOCK.sub("\n```\n", comment)).split("\n")
     pattern = _header_pattern(headers)
     for index, line in enumerate(lines):
         match = pattern.match(line)

@@ -84,6 +84,23 @@ class BoundaryTests(unittest.TestCase):
                 comment = f"BLOCKED REASON: Environment unavailable\n{log}\nSECRET-LOG-LINE"
                 self.assertEqual(reason(comment), "Environment unavailable")
 
+    def test_html_code_blocks_end_the_section(self):
+        for block in (
+            "<pre>INTERNAL-LOG line 1\nline 2</pre>",
+            '<PRE class="log">INTERNAL-LOG</PRE>',
+            "<pre><code>INTERNAL-LOG</code></pre>",
+            "<code>INTERNAL-LOG</code>",
+            "&lt;pre&gt;INTERNAL-LOG&lt;/pre&gt;",
+        ):
+            for separator in ("", " ", "\n", "<br>"):
+                comment = f"BLOCKED REASON: outage{separator}{block} trailing INTERNAL-TAIL"
+                with self.subTest(block=block, separator=separator):
+                    self.assertEqual(reason(comment), "outage")
+
+    def test_header_followed_only_by_a_code_block_yields_nothing(self):
+        self.assertIsNone(reason("BLOCKED REASON:<pre>INTERNAL-LOG</pre>"))
+        self.assertIsNone(reason("<p>BLOCKED REASON:</p><pre>INTERNAL-LOG</pre>"))
+
     def test_header_followed_only_by_logs_yields_nothing(self):
         self.assertIsNone(reason("BLOCKED REASON:\njava.lang.IllegalStateException: boom\n\tat x.y(Z.java:1)"))
         self.assertIsNone(reason("BLOCKED REASON: 2026-01-02 10:11:12 ERROR request failed"))

@@ -785,7 +785,8 @@ BLOCKED REASON: Payment sandbox unavailable
 Headers may be decorated with markdown or HTML (`**SKIPPED REASON:**`,
 `### Blocked reason`, `<p>BLOCKED REASON</p>`), and the text may start on the
 next line. The section ends at a blank line, another labelled section
-(`STEPS:`, `**Expected Result:**`, a heading), a code block, or the first log
+(`STEPS:`, `**Expected Result:**`, a heading), a code block (markdown fence,
+or HTML `<pre>`/`<code>`, also entity-encoded), or the first log
 or stack-trace line (timestamps, log levels, `Traceback`, stack frames,
 qualified exception names). The section is then stripped of images,
 attachment and file references, and markdown link targets; URLs, emails,

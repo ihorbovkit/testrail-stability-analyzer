@@ -134,7 +134,8 @@ class ExitCodeTests(CliTestCase):
         code, stdout, _ = self.run_cli("collect", "plan", "900", "--lookback-days", "0")
 
         self.assertEqual(code, cli.EXIT_OK, stdout)
-        self.assertIn("coverage: selection_limited=", stdout)
+        # Run 502 is unidentified (per-run key), so the selection does not limit it.
+        self.assertIn("coverage: complete=1, selection_limited=2", stdout)
         self.assertIn("Collection: OK", stdout)
 
     def test_capped_collection_is_partial(self):
@@ -163,9 +164,20 @@ class ExitCodeTests(CliTestCase):
         code, stdout, stderr = self.run_cli("collect", "plan", "900")
 
         self.assertEqual(code, cli.EXIT_API_ERROR)
-        self.assertIn("TestRailAuthenticationError", stderr)
+        self.assertIn("TestRailAuthenticationError (HTTP 401)", stderr)
+        self.assertNotIn("Authentication failed", stderr)
         self.assertEqual(stdout, "")
         self.assertNotIn(FAKE_KEY, stderr)
+
+    def test_server_error_text_is_never_printed(self):
+        server_text = f"{SENSITIVE_COMMENT} defect {SENSITIVE_DEFECT} echoed key {FAKE_KEY} user {FAKE_USER}"
+        self.server.errors["get_plan/900"] = (500, server_text)
+        code, stdout, stderr = self.run_cli("collect", "plan", "900")
+
+        self.assertEqual(code, cli.EXIT_API_ERROR)
+        self.assertEqual(stderr, "TestRail API error: TestRailHTTPError (HTTP 500); response details are not shown\n")
+        for sensitive in (SENSITIVE_COMMENT, "abc123", "assets.example.invalid", SENSITIVE_DEFECT, FAKE_KEY, FAKE_USER):
+            self.assertNotIn(sensitive, stdout + stderr)
 
     def test_missing_credentials_are_reported_without_requests(self):
         code, _, stderr = self.run_cli("collect", "plan", "900", environ={})

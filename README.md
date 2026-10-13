@@ -409,7 +409,7 @@ immutable.
 |---|---|
 | `complete` | No lookback limit, discovery complete, and every run that could hold a newer result for this key was scanned. `is_verified_latest` is true only here. |
 | `lookback_limited` | As complete, but only within the lookback period (see discovery). |
-| `selection_limited` | Targeted collection: complete within the selected runs; other runs were not scanned. |
+| `selection_limited` | Targeted collection, identified keys: complete within the selected runs; other runs were not scanned. |
 | `partial` | Incomplete discovery, invalid selected IDs, relevant runs not scanned (request budget), or records cut by the result-record cap. |
 
 Even `complete` is limited to the runs TestRail returns for the project and
@@ -474,11 +474,12 @@ Set `collection.plan_ids` and/or `collection.run_ids` (or use the
 - Selected runs are never excluded for their age; the suite, naming
   patterns, and filters still apply. Results are still fetched from the
   lookback start, so use `lookback_limit_days = 0` for old runs.
-- Histories are at best `selection_limited`: newer results may exist in runs
-  outside the selection. For the same reason, `window_complete` is false for
-  identified case/application/platform keys (unselected runs may hold
-  executions in the window); unidentified keys consist of one run and are
-  unaffected.
+- Histories of identified case/application/platform keys are at best
+  `selection_limited`, and their `window_complete` is false: unselected runs
+  may hold newer results or executions in the window. Unidentified keys
+  consist of one run, which unselected runs cannot change, so they keep the
+  usual `complete`/`lookback_limited`/`partial` coverage; their window is
+  incomplete only when that run's result records were capped.
 - If the request budget runs out while fetching a selected run's parent plan,
   the run is kept without a plan name (as for an inaccessible parent) and
   discovery is marked incomplete.
@@ -574,7 +575,9 @@ written.
   item (read-only; the secret is read from the tool's output, never passed as
   an argument, and tool output is never included in errors). Other sources
   can be added by implementing the same interface.
-- The CLI prints only counts, IDs, mapping names, and status categories.
+- The CLI prints only counts, IDs, mapping names, and status categories. API
+  errors are reported by exception type and HTTP status only; TestRail's
+  response text is never printed.
 - `Credentials` objects redact both fields from `repr()`/`str()`; error
   messages never include credential values or the Authorization header.
 - Result comments are excluded from model `repr()` and never logged. Use

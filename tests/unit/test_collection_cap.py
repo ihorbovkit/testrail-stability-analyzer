@@ -199,6 +199,25 @@ class PartialFinalOutcomeTests(unittest.TestCase):
         history = next(h for h in report.histories if h.key.case_id == 101 and h.key.platform.name == "Platform X")
         self.assertIs(history.state, AvailabilityState.RESULTS_INCOMPLETE)
 
+    def test_capped_unidentified_run_has_an_incomplete_window(self):
+        server = self.build()
+        server.plans[900][1][0]["config"] = "Unknown-Platform"  # per-run (unidentified) history keys
+        report = collect(server, 1)
+        history = next(h for h in report.histories if h.key.case_id == 100)
+
+        self.assertEqual(history.key.run_id, 501)
+        self.assertEqual(history.window_total, 0)  # only the comment-only record was retrieved
+        self.assertFalse(history.window_complete)
+        self.assertIn("history window may be incomplete: the run's result records were capped", history.coverage_notes)
+        self.assertIs(history.coverage, Coverage.PARTIAL)
+
+    def test_uncapped_unidentified_run_has_a_complete_window(self):
+        server = self.build()
+        server.plans[900][1][0]["config"] = "Unknown-Platform"
+        report = collect(server, 0)
+
+        self.assertTrue(all(h.window_complete for h in report.histories if not h.key.is_identified))
+
     def test_full_stream_yields_verified_final(self):
         report = collect(self.build(), 0)  # 0 = no cap
         outcome = next(o for o in report.outcomes if o.test_id == 1)

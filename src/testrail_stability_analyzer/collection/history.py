@@ -94,7 +94,7 @@ def build_histories(
             key_notes.append(f"result records of {capped} run(s) were cut by the result-record cap")
         coverage, notes = _coverage(group, latest, gaps, key_notes, lookback_limited, selection_limited)
         window_complete, window_notes = _window_completeness(
-            group, gaps, window_start, discovery_complete, selection_limited
+            group, ordered, gaps, window_start, discovery_complete, selection_limited
         )
         histories.append(
             ExecutionHistory(
@@ -176,7 +176,8 @@ def _coverage(
             )
     if notes:
         return Coverage.PARTIAL, tuple(notes)
-    if selection_limited:
+    # A per-run (unidentified) key cannot be changed by unselected runs, so the selection does not limit it.
+    if selection_limited and group is not None:
         selection_notes = ["only the selected runs were scanned"]
         if lookback_limited:
             selection_notes.append("results before the lookback start were not searched")
@@ -188,13 +189,18 @@ def _coverage(
 
 def _window_completeness(
     group: Group | None,
+    outcomes: Sequence[RunOutcome],
     gaps: Mapping[Group, Sequence[RunScan]],
     window_start: datetime,
     discovery_complete: bool,
     selection_limited: bool = False,
 ) -> tuple[bool, tuple[str, ...]]:
     if group is None:
-        return True, ()  # unidentified keys consist of one fully scanned run
+        # Unidentified keys consist of one run: complete unless its result stream was capped,
+        # in which case its execution in the window may lie in records that were not retrieved.
+        if any(not outcome.results_complete for outcome in outcomes):
+            return False, ("history window may be incomplete: the run's result records were capped",)
+        return True, ()
     notes = [] if discovery_complete else ["history window may be incomplete: run discovery was incomplete"]
     if selection_limited:
         # Unselected runs of the same application/platform may hold executions in the window.

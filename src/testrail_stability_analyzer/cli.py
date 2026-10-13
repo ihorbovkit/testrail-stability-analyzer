@@ -24,7 +24,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final, TextIO
 
-from .api import HttpTransport, TestRailClient, TestRailError
+from .api import HttpTransport, TestRailClient, TestRailError, TestRailHTTPError
 from .collection import (
     CollectionReport,
     DimensionState,
@@ -125,7 +125,9 @@ def main(
         err.write(f"credential error: {exc}\n")
         return EXIT_API_ERROR
     except TestRailError as exc:
-        err.write(f"TestRail API error ({type(exc).__name__}): {exc}\n")
+        # The exception message can contain untrusted server response text; print only local facts.
+        status = f" (HTTP {exc.status})" if isinstance(exc, TestRailHTTPError) and isinstance(exc.status, int) else ""
+        err.write(f"TestRail API error: {type(exc).__name__}{status}; response details are not shown\n")
         return EXIT_API_ERROR
 
 

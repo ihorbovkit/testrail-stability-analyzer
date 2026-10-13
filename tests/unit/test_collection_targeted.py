@@ -277,7 +277,8 @@ class SelectionCoverageTests(unittest.TestCase):
         self.assertTrue(identified)
         for history in identified:
             self.assertFalse(history.window_complete)
-            self.assertIn("history window may be incomplete: only the selected runs were scanned", history.coverage_notes)
+            note = "history window may be incomplete: only the selected runs were scanned"
+            self.assertIn(note, history.coverage_notes)
 
     def test_history_window_of_unidentified_keys_keeps_per_run_behaviour(self):
         server = build_server()
@@ -287,6 +288,31 @@ class SelectionCoverageTests(unittest.TestCase):
 
         self.assertEqual(unidentified.key.run_id, 502)
         self.assertTrue(unidentified.window_complete)
+
+    def test_fully_scanned_unidentified_key_is_not_selection_limited(self):
+        server = build_server()
+        server.plans[900][1][1]["config"] = "Unknown-Platform"  # run 502: platform unresolved
+        report = collect(server, settings(plan_ids=[900], history={"lookback_limit_days": 0}))
+        by_identity = {h.key.is_identified: h for h in report.histories if h.key.case_id == 100}
+
+        self.assertIs(by_identity[False].coverage, Coverage.COMPLETE)
+        self.assertTrue(by_identity[False].is_verified_latest)
+        self.assertIs(by_identity[True].coverage, Coverage.SELECTION_LIMITED)
+        self.assertFalse(by_identity[True].is_verified_latest)
+
+    def test_unidentified_key_keeps_lookback_and_partial_checks(self):
+        server = build_server()
+        server.plans[900][1][1]["config"] = "Unknown-Platform"
+        lookback = collect(server, settings(plan_ids=[900]))
+        (unidentified,) = [h for h in lookback.histories if not h.key.is_identified]
+        self.assertIs(unidentified.coverage, Coverage.LOOKBACK_LIMITED)
+
+        server = build_server()
+        server.plans[900][1][1]["config"] = "Unknown-Platform"
+        server.errors["get_plan/999"] = (400, "invalid")
+        invalid = collect(server, settings(plan_ids=[900, 999], history={"lookback_limit_days": 0}))
+        (unidentified,) = [h for h in invalid.histories if not h.key.is_identified]
+        self.assertIs(unidentified.coverage, Coverage.PARTIAL)
 
     def test_project_wide_window_completeness_is_unchanged(self):
         report = collect(build_server(), fx.settings(history={"lookback_limit_days": 0}))

@@ -999,9 +999,13 @@ stability-plan-1108517-p105-s50343-60d-20261014-110500.xlsx
 - An **explicit file path** is used as given. If it already exists, the
   command stops before any TestRail request (exit code `2`) unless
   `--overwrite-report` is given; the file is then replaced atomically
-  (temporary file in the same directory, then rename). If the file appears
-  while the collection runs, it is not overwritten (exit code `1`; the
-  summary is still printed).
+  (temporary file in the same directory, then rename). Overwriting is
+  decided before collection: only a file that existed then, and is still
+  the same unmodified file when the report is written, is replaced. A file
+  that appears, is replaced, or is modified while the collection runs is
+  not overwritten, also with `--overwrite-report` (exit code `1`; the
+  summary is still printed). If the existing file was deleted meanwhile,
+  the report is created as a new file.
 - Missing or unwritable directories are reported before any TestRail
   request. New report files are readable by the owner only (mode `0600`).
 

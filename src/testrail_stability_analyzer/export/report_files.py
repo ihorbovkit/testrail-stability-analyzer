@@ -11,12 +11,18 @@ base name and suffix, differing only in the extension. Files are created
 exclusively (``O_CREAT | O_EXCL``), so an existing report, including one
 written by another process in the same second, is never overwritten: an
 automatic name gets the next free ``-2``, ``-3``, ... suffix, and an explicit
-file name fails unless overwriting was requested, in which case the file is
-replaced atomically. New files are readable by the owner only.
+file name fails if it exists. Overwriting is decided once, before collection
+(:func:`authorize_overwrite`): only a file that existed then is replaced, and
+only while it is still the same file (device, inode, size, modification
+time); it is then replaced atomically. A file created, replaced, or modified
+by another process during collection is left untouched (the short window
+between that check and the rename is not locked). New files are readable by
+the owner only.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import tempfile
 from collections.abc import Sequence
@@ -42,11 +48,30 @@ class ReportFileError(Exception):
 
 
 @dataclass(frozen=True, slots=True)
+class FileIdentity:
+    """The state of an existing file, used to detect a concurrent change; symlinks are not followed."""
+
+    device: int
+    inode: int
+    size: int
+    modified_ns: int
+
+    @classmethod
+    def of(cls, path: Path) -> FileIdentity | None:
+        try:
+            info = os.lstat(path)
+        except FileNotFoundError:
+            return None
+        return cls(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
+
+
+@dataclass(frozen=True, slots=True)
 class ReportTarget:
     label: str  # "XML" or "XLSX"
     path: Path
     extension: str  # ".xml" or ".xlsx", used for automatic names
     directory_requested: bool = False  # the path was given with a trailing separator
+    replaces: FileIdentity | None = None  # the existing file authorized for overwriting, see authorize_overwrite
 
     @classmethod
     def parse(cls, label: str, raw: str, extension: str) -> ReportTarget:
@@ -94,9 +119,19 @@ def target_problem(target: ReportTarget, *, overwrite: bool) -> str | None:
     return None
 
 
-def write_reports(
-    reports: Sequence[tuple[ReportTarget, bytes]], basename: str, *, overwrite: bool
-) -> list[tuple[str, Path]]:
+def authorize_overwrite(target: ReportTarget, *, overwrite: bool) -> ReportTarget:
+    """Record the existing explicit file that may be replaced; called with :func:`target_problem`.
+
+    Without ``overwrite``, for automatic names, or when the file does not
+    exist, the target is returned unchanged and its file is created exclusively.
+    """
+    if not overwrite or target.automatic:
+        return target
+    identity = FileIdentity.of(target.path)
+    return target if identity is None else dataclasses.replace(target, replaces=identity)
+
+
+def write_reports(reports: Sequence[tuple[ReportTarget, bytes]], basename: str) -> list[tuple[str, Path]]:
     """Write every report; returns ``(label, absolute path)`` per written file, in order.
 
     Raises :class:`ReportFileError` at the first file that cannot be written;
@@ -110,16 +145,9 @@ def write_reports(
             if target.automatic:
                 fd, path = reserved.pop(target)
                 _write_new(fd, path, data)
-            elif overwrite:
-                path = Path(os.path.abspath(target.path))
-                _write_replace(path, data)
             else:
                 path = Path(os.path.abspath(target.path))
-                try:
-                    fd = _create(path)
-                except FileExistsError:  # created after the check before collection
-                    raise ReportFileError(f"{path} already exists; pass --overwrite-report to replace it") from None
-                _write_new(fd, path, data)
+                _write_explicit(target, path, data)
             written.append((target.label, path))
     except ReportFileError as exc:
         raise ReportFileError(f"could not write the {target.label} report: {exc}", written) from None
@@ -162,6 +190,23 @@ def _create(path: Path) -> int:
         raise ReportFileError(f"{path}: {exc.strerror or type(exc).__name__}") from None
 
 
+def _write_explicit(target: ReportTarget, path: Path, data: bytes) -> None:
+    """Replace only the authorized, unchanged file; otherwise create exclusively."""
+    if target.replaces is not None:
+        current = FileIdentity.of(path)
+        if current == target.replaces:
+            _write_replace(path, data)
+            return
+        if current is not None:
+            raise ReportFileError(f"{path} changed while the collection ran; it was not overwritten")
+        # The authorized file was removed meanwhile; creating exclusively keeps any file that appears now.
+    try:
+        fd = _create(path)
+    except FileExistsError:  # created after the check before collection
+        raise ReportFileError(f"{path} already exists; it was not overwritten") from None
+    _write_new(fd, path, data)
+
+
 def _write_new(fd: int, path: Path, data: bytes) -> None:
     try:
         with os.fdopen(fd, "wb") as file:
@@ -192,8 +237,10 @@ def _ids(ids: Sequence[int]) -> str:
 
 
 __all__ = [
+    "FileIdentity",
     "ReportFileError",
     "ReportTarget",
+    "authorize_overwrite",
     "report_basename",
     "report_scope",
     "target_problem",

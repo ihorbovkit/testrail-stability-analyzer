@@ -208,16 +208,20 @@ class RunDiscovery:
             notes.append(f"{len(listed) - len(candidates)} plan(s) do not match naming.plan_name_patterns")
         inspected: list[int] = []
         limit = min(len(candidates), max_candidates)
-        for done, summary in enumerate(candidates[:max_candidates]):
+
+        def report(attempted: int) -> None:
             self._progress(
                 DiscoveryProgress(
-                    plans_fetched=done,
+                    plans_fetched=len(inspected),
                     plans_listed=len(listed),
-                    targets_done=done,
+                    targets_done=attempted,
                     targets_total=limit,
                     target_kind="candidate plans",
                 )
             )
+
+        report(0)
+        for attempted, summary in enumerate(candidates[:max_candidates], start=1):
             try:
                 plan = self._client.get_plan(summary.id)
             except TestRailRequestBudgetExceeded:
@@ -227,8 +231,10 @@ class RunDiscovery:
                 if exc.status not in _INVALID_ID_REASONS:
                     raise
                 notes.append(f"plan {summary.id} {_INVALID_ID_REASONS[exc.status]} (HTTP {exc.status})")
+                report(attempted)  # an invalid candidate counts as attempted
                 continue
             inspected.append(plan.id)
+            report(attempted)
             if any(self._decision(run, plan) is RunDecision.INCLUDED for run in plan.runs):
                 return SamplePlanSelection(plan, len(listed), tuple(inspected), tuple(notes))
             notes.append(f"plan {plan.id} has no run eligible under the configured suite, naming patterns and filters")

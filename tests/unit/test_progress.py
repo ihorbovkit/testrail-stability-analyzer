@@ -166,9 +166,28 @@ class DiscoveryAndCollectionEventTests(unittest.TestCase):
         client = fx.make_client(build_server(), fx.settings())
         RunDiscovery(client, fx.settings(), progress=events.append).find_sample_plan(None, max_candidates=3)
 
-        (event,) = of_type(events, DiscoveryProgress)
-        self.assertEqual((event.plans_listed, event.targets_done, event.targets_total), (1, 0, 1))
-        self.assertEqual(event.target_kind, "candidate plans")
+        discovery = of_type(events, DiscoveryProgress)
+        # The eligible first candidate is still reported as fetched before the selection returns.
+        self.assertEqual(
+            [(e.plans_listed, e.plans_fetched, e.targets_done, e.targets_total) for e in discovery],
+            [(1, 0, 0, 1), (1, 1, 1, 1)],
+        )
+        self.assertEqual({e.target_kind for e in discovery}, {"candidate plans"})
+
+    def test_sample_selection_counts_invalid_and_ineligible_candidates(self):
+        server = build_server()
+        server.add_plan(901, "App-A Smoke", created=days_ago(2))
+        server.errors["get_plan/901"] = (403, "no access")
+        settings = fx.settings(naming={"run_name_patterns": ["^Nothing$"]})
+        events = []
+        client = fx.make_client(server, settings)
+        selection = RunDiscovery(client, settings, progress=events.append).find_sample_plan(None, max_candidates=3)
+
+        self.assertIsNone(selection.plan)
+        discovery = of_type(events, DiscoveryProgress)
+        self.assertEqual(
+            [(e.plans_fetched, e.targets_done, e.targets_total) for e in discovery], [(0, 0, 2), (0, 1, 2), (1, 2, 2)]
+        )
 
 
 class ConsoleProgressTests(unittest.TestCase):

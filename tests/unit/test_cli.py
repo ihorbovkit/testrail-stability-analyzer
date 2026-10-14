@@ -747,6 +747,22 @@ class ProgressOutputTests(CliTestCase):
         self.assertIn("Stopped after phase 2/3 (Run discovery (sample plan selection))", stderr)
         self.assertNotIn("Completed", stderr)
 
+    def test_sample_selection_shows_candidate_counts(self):
+        class Recorder(cli.NullProgress):
+            def __init__(self):
+                self.events = []
+
+            def __call__(self, event):
+                self.events.append(event)
+
+        recorder = Recorder()
+        with mock.patch.object(cli, "_progress", return_value=recorder):
+            code, _, _ = self.run_cli("collect", "sample", progress="plain")
+
+        self.assertEqual(code, cli.EXIT_OK)
+        candidates = [e for e in recorder.events if getattr(e, "target_kind", None) == "candidate plans"]
+        self.assertEqual([(e.targets_done, e.targets_total) for e in candidates], [(0, 1), (1, 1)])
+
     def test_progress_never_shows_names_comments_or_credentials(self):
         report = self.config.parent / "report.xml"
         _, _, stderr = self.run_cli("collect", "project", "--xml-report", str(report), progress="tty")
@@ -892,6 +908,22 @@ class ReportFileNameTests(CliTestCase):
         self.assertIn("already exists", stderr)
         self.assertEqual(report.read_text(), "written by someone else")
         self.assertIn("Collection: OK", stdout)  # the summary is still printed
+
+    def test_overwrite_does_not_replace_a_file_created_during_collection(self):
+        report = self.out / "my-report.xml"
+        original = self.server.get
+
+        def get(url, headers, **kwargs):
+            if not report.exists():
+                report.write_text("written by someone else")
+            return original(url, headers, **kwargs)
+
+        self.server.get = get
+        code, _, stderr = self.run_cli("collect", "plan", "900", "--xml-report", str(report), "--overwrite-report")
+
+        self.assertEqual(code, cli.EXIT_UNEXPECTED)
+        self.assertIn("already exists", stderr)
+        self.assertEqual(report.read_text(), "written by someone else")
 
     def test_invalid_output_directories_make_no_requests(self):
         missing = self.config.parent / "missing"

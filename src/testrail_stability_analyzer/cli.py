@@ -72,6 +72,7 @@ from .export import XlsxUnavailableError, build_report, render_spreadsheet, rend
 from .export.report_files import (
     ReportFileError,
     ReportTarget,
+    authorize_overwrite,
     report_basename,
     report_scope,
     target_problem,
@@ -253,8 +254,10 @@ def _execute(
     if args.xlsx_report is not None and not xlsx_available():
         err.write(f"{INSTALL_HINT}\n")
         return EXIT_INVALID_CONFIGURATION, "openpyxl is not installed"
+    # The overwrite decision is taken now: a file absent at this point is never replaced later.
+    targets = [authorize_overwrite(target, overwrite=args.overwrite_report) for target in targets]
     try:
-        code = _collect(args, settings, out, err, environ, transport, clock, progress)
+        code = _collect(args, settings, targets, out, err, environ, transport, clock, progress)
     except CredentialError as exc:
         err.write(f"credential error: {exc}\n")
         return EXIT_API_ERROR, "credential error"
@@ -312,6 +315,7 @@ def _isatty(stream: TextIO) -> bool:
 def _collect(
     args: argparse.Namespace,
     settings: Settings,
+    report_targets: Sequence[ReportTarget],
     out: TextIO,
     err: TextIO,
     environ: Mapping[str, str] | None,
@@ -329,7 +333,8 @@ def _collect(
         progress.phase(PHASE_DISCOVERY)
         lookback_days = settings.history.lookback_limit_days
         lookback_start = None if lookback_days is None else now - timedelta(days=lookback_days)
-        sample = RunDiscovery(client, settings).find_sample_plan(lookback_start, max_candidates=args.max_candidates)
+        discoverer = RunDiscovery(client, settings, progress=progress)
+        sample = discoverer.find_sample_plan(lookback_start, max_candidates=args.max_candidates)
         if sample.plan is None:
             out.write(_sample_lines(sample, client.requests_made))
             out.write("No eligible Test Plan found; nothing was collected.\n")
@@ -355,7 +360,7 @@ def _collect(
         out.write(format_summary(report, settings))
         err.write("no eligible run found in the project; nothing was collected\n")
         return EXIT_PARTIAL if report.budget_exhausted else EXIT_NO_TARGET
-    targets = {target.label: target for target in _report_targets(args)}
+    targets = {target.label: target for target in report_targets}
     outputs: list[tuple[ReportTarget, bytes]] = []
     if targets:
         # Metadata is fetched once and shared by both formats.
@@ -391,7 +396,7 @@ def _collect(
         testrail = settings.testrail
         basename = report_basename(scope, testrail.project_id, testrail.suite_id, settings.history.window_days, now)
         try:
-            written = write_reports(outputs, basename, overwrite=args.overwrite_report)
+            written = write_reports(outputs, basename)
         except ReportFileError as exc:
             # Reports written before the failure are kept and listed; the message names local paths only.
             out.writelines(f"{label} report written: {path}\n" for label, path in exc.written)

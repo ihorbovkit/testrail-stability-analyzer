@@ -9,7 +9,9 @@ from testrail_stability_analyzer.analysis import analyze
 from testrail_stability_analyzer.analysis.models import Diagnosis, Rate
 from testrail_stability_analyzer.config.settings import StatusCategory
 from testrail_stability_analyzer.export import build_report, render_spreadsheet
+from testrail_stability_analyzer.export import overview_cell
 from testrail_stability_analyzer.export.report_data import (
+    NO_HISTORY_LABEL,
     OVERVIEW_GREEN,
     OVERVIEW_NEUTRAL,
     OVERVIEW_RED,
@@ -81,6 +83,13 @@ class ThresholdTests(unittest.TestCase):
         self.assertEqual(self.style(0, 0), OVERVIEW_NEUTRAL)
         self.assertEqual(self.style(4, 4), OVERVIEW_NEUTRAL)
         self.assertEqual(self.style(4, 4, min_executions=4), OVERVIEW_GREEN)
+
+    def test_overview_cell_defaults_to_the_default_threshold(self):
+        _, analysis, _ = inputs([PASSED] * 4, min_executions=4)
+        key = analysis.analyses[0]
+        self.assertEqual(overview_cell(key).style, OVERVIEW_NEUTRAL)  # 4 < DEFAULT_MIN_EXECUTIONS (5)
+        self.assertEqual(overview_cell(key, min_executions=4).style, OVERVIEW_GREEN)
+        self.assertEqual(overview_cell(None).value, NO_HISTORY_LABEL)
 
 
 class OverviewColourTests(unittest.TestCase):

@@ -8,6 +8,7 @@ from pathlib import Path
 from testrail_stability_analyzer.export.report_files import (
     ReportFileError,
     ReportTarget,
+    authorize_overwrite,
     report_basename,
     report_scope,
     target_problem,
@@ -100,9 +101,9 @@ class TargetTests(FileTestCase):
 
 class WriteTests(FileTestCase):
     def test_automatic_names_are_unique_within_one_second(self):
-        first = write_reports([(self.auto(), b"1")], BASE, overwrite=False)
-        second = write_reports([(self.auto(), b"2")], BASE, overwrite=False)
-        third = write_reports([(self.auto(), b"3")], BASE, overwrite=True)  # never reuses a generated name
+        first = write_reports([(self.auto(), b"1")], BASE)
+        second = write_reports([(self.auto(), b"2")], BASE)
+        third = write_reports([(self.auto(), b"3")], BASE)  # never reuses a generated name
 
         self.assertEqual([path.name for _, path in first + second + third],
                          [f"{BASE}.xlsx", f"{BASE}-2.xlsx", f"{BASE}-3.xlsx"])  # fmt: skip
@@ -111,7 +112,7 @@ class WriteTests(FileTestCase):
 
     def test_formats_share_one_basename_and_suffix(self):
         (self.dir / f"{BASE}.xml").write_text("someone else's report")
-        written = write_reports([(self.auto("XML", ".xml"), b"x"), (self.auto(), b"y")], BASE, overwrite=False)
+        written = write_reports([(self.auto("XML", ".xml"), b"x"), (self.auto(), b"y")], BASE)
 
         self.assertEqual([(label, path.name) for label, path in written],
                          [("XML", f"{BASE}-2.xml"), ("XLSX", f"{BASE}-2.xlsx")])  # fmt: skip
@@ -119,7 +120,7 @@ class WriteTests(FileTestCase):
         self.assertNotIn(f"{BASE}.xlsx", self.names())  # the free single-format name is not used
 
     def test_new_files_are_private(self):
-        ((_, path),) = write_reports([(self.auto(), b"x")], BASE, overwrite=False)
+        ((_, path),) = write_reports([(self.auto(), b"x")], BASE)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
 
     def test_explicit_file_is_never_overwritten_without_permission(self):
@@ -127,13 +128,50 @@ class WriteTests(FileTestCase):
         explicit.write_text("old")
         target = ReportTarget.parse("XML", str(explicit), ".xml")
         with self.assertRaises(ReportFileError) as ctx:
-            write_reports([(target, b"new")], BASE, overwrite=False)
+            write_reports([(target, b"new")], BASE)
         self.assertIn("already exists", str(ctx.exception))
         self.assertEqual(explicit.read_text(), "old")
 
-        ((_, path),) = write_reports([(target, b"new")], BASE, overwrite=True)
+        ((_, path),) = write_reports([(authorize_overwrite(target, overwrite=True), b"new")], BASE)
         self.assertEqual((path, explicit.read_text()), (explicit, "new"))
         self.assertEqual(self.names(), ["mine.xml"])  # no temporary file left
+
+    def test_overwrite_never_replaces_a_file_absent_before_collection(self):
+        explicit = self.dir / "mine.xml"
+        target = authorize_overwrite(ReportTarget.parse("XML", str(explicit), ".xml"), overwrite=True)
+        explicit.write_text("written by someone else")  # appears during collection
+        with self.assertRaises(ReportFileError) as ctx:
+            write_reports([(target, b"new")], BASE)
+        self.assertIn("already exists", str(ctx.exception))
+        self.assertEqual(explicit.read_text(), "written by someone else")
+
+    def test_overwrite_keeps_a_file_changed_during_collection(self):
+        explicit = self.dir / "mine.xml"
+        explicit.write_text("old")
+        target = authorize_overwrite(ReportTarget.parse("XML", str(explicit), ".xml"), overwrite=True)
+        replacement = self.dir / "other.xml"
+        replacement.write_text("written by someone else")
+        replacement.replace(explicit)  # another file now has the name
+        with self.assertRaises(ReportFileError) as ctx:
+            write_reports([(target, b"new")], BASE)
+        self.assertIn("changed while the collection ran", str(ctx.exception))
+        self.assertEqual(explicit.read_text(), "written by someone else")
+
+    def test_overwrite_creates_a_file_removed_during_collection(self):
+        explicit = self.dir / "mine.xml"
+        explicit.write_text("old")
+        target = authorize_overwrite(ReportTarget.parse("XML", str(explicit), ".xml"), overwrite=True)
+        explicit.unlink()
+        ((_, path),) = write_reports([(target, b"new")], BASE)
+        self.assertEqual((path, explicit.read_text()), (explicit, "new"))
+
+    def test_overwrite_is_not_authorized_for_automatic_names_or_without_the_option(self):
+        explicit = self.dir / "mine.xml"
+        explicit.write_text("old")
+        target = ReportTarget.parse("XML", str(explicit), ".xml")
+        self.assertIsNone(authorize_overwrite(target, overwrite=False).replaces)
+        self.assertIsNone(authorize_overwrite(self.auto(), overwrite=True).replaces)
+        self.assertIsNotNone(authorize_overwrite(target, overwrite=True).replaces)
 
     def test_symlink_is_not_followed(self):
         victim = self.dir / "victim.txt"
@@ -141,7 +179,7 @@ class WriteTests(FileTestCase):
         link = self.dir / "r.xml"
         link.symlink_to(victim)
         with self.assertRaises(ReportFileError):
-            write_reports([(ReportTarget.parse("XML", str(link), ".xml"), b"x")], BASE, overwrite=False)
+            write_reports([(ReportTarget.parse("XML", str(link), ".xml"), b"x")], BASE)
         self.assertEqual(victim.read_text(), "keep")
 
     def test_failure_keeps_written_reports_and_removes_reserved_ones(self):
@@ -151,7 +189,7 @@ class WriteTests(FileTestCase):
         automatic = ReportTarget.parse("XML", f"{self.dir}/auto/", ".xml")
         (self.dir / "auto").mkdir()
         with self.assertRaises(ReportFileError) as ctx:
-            write_reports([(ok, b"1"), (taken, b"2"), (automatic, b"3")], BASE, overwrite=False)
+            write_reports([(ok, b"1"), (taken, b"2"), (automatic, b"3")], BASE)
 
         self.assertEqual([label for label, _ in ctx.exception.written], ["XML"])
         self.assertIn("could not write the XLSX report", str(ctx.exception))

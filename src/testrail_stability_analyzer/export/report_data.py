@@ -41,7 +41,7 @@ from ..collection.models import (
 )
 from ..collection.outcomes import field_value
 from ..collection.sections import feature_group_label
-from ..config.settings import Settings, StatusCategory
+from ..config.settings import DEFAULT_MIN_EXECUTIONS, Settings, StatusCategory
 from ..models import Test
 
 GREEN: Final = "green"
@@ -508,7 +508,7 @@ def overview_cell(
     analysis: KeyAnalysis | None,
     applicability: Applicability = Applicability.NOT_CONFIGURED,
     *,
-    min_executions: int,
+    min_executions: int = DEFAULT_MIN_EXECUTIONS,
     blocked_reasons: bool = False,
 ) -> Cell:
     """The compact Overview value of one combination: its latest status or a meaningful state.
@@ -518,7 +518,8 @@ def overview_cell(
     :func:`overview_style`. ``applicability`` (of the case to the
     combination's application) only matters without history: a resolved
     exclusion shows Not Applicable. With ``blocked_reasons``, the note of a
-    latest Blocked status adds its reason.
+    latest Blocked status adds its reason. ``min_executions`` defaults to the
+    default ``analysis.min_executions``; pass the configured value when it differs.
     """
     if analysis is None:
         if applicability is Applicability.NOT_APPLICABLE:

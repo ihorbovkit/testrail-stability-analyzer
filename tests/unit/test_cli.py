@@ -530,6 +530,17 @@ class XmlReportCommandTests(CliTestCase):
         # Stability results are exported unchanged.
         self.assertIn('<Cell ss:StyleID="yellow"><Data ss:Type="String">Automation Issue</Data></Cell>', xml)
 
+    def test_budget_exhausted_by_metadata_is_not_shown_as_partial_progress(self):
+        argv = ("collect", "plan", "900", "--lookback-days", "0", "--max-requests", "6", "--xml-report", str(self.report))
+        code, _, stderr = self.run_cli(*argv, progress="plain")
+
+        self.assertEqual(code, cli.EXIT_OK)
+        self.assertIn("while fetching optional report metadata", stderr)
+        self.assertNotIn("coverage will be partial", stderr)
+        self.assertNotIn("PARTIAL", stderr)
+        self.assertIn("Phase 4/6 ended after 0s (request budget exhausted; report metadata may be missing)", stderr)
+        self.assertNotIn("Phase 5/6 ended after 0s (request budget", stderr)
+
     def test_invalid_report_path_is_rejected_before_requests(self):
         missing = self.config.parent / "missing"
         for path in (missing / "report.xml", f"{missing}/"):

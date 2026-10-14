@@ -11,20 +11,27 @@ base name and suffix, differing only in the extension. Files are created
 exclusively (``O_CREAT | O_EXCL``), so an existing report, including one
 written by another process in the same second, is never overwritten: an
 automatic name gets the next free ``-2``, ``-3``, ... suffix, and an explicit
-file name fails if it exists. Overwriting is decided once, before collection
-(:func:`authorize_overwrite`): only a file that existed then is replaced, and
-only while it is still the same file (device, inode, size, modification
-time); it is then replaced atomically. A file created, replaced, or modified
-by another process during collection is left untouched (the short window
-between that check and the rename is not locked). New files are readable by
-the owner only.
+file name fails if it exists. New files are readable by the owner only.
 
-A file this module created is removed again (an unwritten reservation, a
-failed write) only while its descriptor is still open and the path still
-names that same file (device and inode), so a report another process put
-under the same name in the meantime is never deleted. POSIX offers no unlink
-by descriptor; the remaining window between that check and the unlink is
-not locked.
+Overwriting is decided once, before collection (:func:`authorize_overwrite`):
+only a file that existed then is replaced. The replacement is written to a
+temporary file in the same directory; immediately before the atomic rename,
+the path must still name the same file (device, inode, size, modification
+time), otherwise nothing is replaced. This detects a file created, replaced,
+or modified during collection, but it is **not** a conditional rename and
+does not coordinate with other writers: a file another process puts at the
+path between that last check and the rename is overwritten and lost. Use a
+directory (generated, never reused names) when another process may write the
+same path.
+
+A file this module creates is reported as written only if, just before its
+descriptor is closed, the path still names it (device and inode); a file
+another process put under the same name in the meantime is never claimed as
+this report. Cleanup (an unwritten reservation, a failed write) removes a
+file only under the same check, while its descriptor is open, so another
+process's report is never deleted. POSIX offers no unlink or rename by
+descriptor, so the window between such a check and the operation is not
+locked; a writer that changes the path afterwards is not detected.
 """
 
 from __future__ import annotations
@@ -100,14 +107,21 @@ class _Created:
         if self.fd < 0:
             return
         try:
-            info = os.lstat(self.path)
-            # The open descriptor keeps the inode allocated, so a match cannot be a reused inode.
-            if (info.st_dev, info.st_ino) == (self.device, self.inode):
+            if self.owns_path():
                 self.path.unlink()
         except OSError:
             pass
         finally:
             self.close()
+
+    def owns_path(self) -> bool:
+        """True when the path still names this file; meaningful only while the descriptor is open."""
+        try:
+            info = os.lstat(self.path)
+        except FileNotFoundError:
+            return False
+        # The open descriptor keeps the inode allocated, so a match cannot be a reused inode.
+        return (info.st_dev, info.st_ino) == (self.device, self.inode)
 
     def close(self) -> None:
         if self.fd >= 0:
@@ -240,12 +254,9 @@ def _create(path: Path) -> int:
 def _write_explicit(target: ReportTarget, path: Path, data: bytes) -> None:
     """Replace only the authorized, unchanged file; otherwise create exclusively."""
     if target.replaces is not None:
-        current = FileIdentity.of(path)
-        if current == target.replaces:
-            _write_replace(path, data)
+        if FileIdentity.of(path) is not None:
+            _write_replace(path, data, target.replaces)
             return
-        if current is not None:
-            raise ReportFileError(f"{path} changed while the collection ran; it was not overwritten")
         # The authorized file was removed meanwhile; creating exclusively keeps any file that appears now.
     try:
         created = _Created.create(path)
@@ -255,24 +266,33 @@ def _write_explicit(target: ReportTarget, path: Path, data: bytes) -> None:
 
 
 def _write_new(created: _Created, data: bytes) -> None:
-    """Write and close; on failure the file is discarded while its descriptor is still open."""
+    """Write, confirm the path still names the file, and close; on failure the owned file is discarded."""
     try:
         view = memoryview(data)
         while view:
             view = view[os.write(created.fd, view) :]
+        if not created.owns_path():
+            created.discard()  # already unlinked or renamed away; the other file at the path is kept
+            raise ReportFileError(f"{created.path} was replaced by another file while writing; report not written")
         created.close()
     except OSError as exc:
         created.discard()
         raise ReportFileError(f"{created.path}: {exc.strerror or type(exc).__name__}") from None
 
 
-def _write_replace(path: Path, data: bytes) -> None:
-    """Atomic replacement: write a temporary file in the same directory, then rename it over ``path``."""
+def _write_replace(path: Path, data: bytes, expected: FileIdentity) -> None:
+    """Write a temporary file in the same directory, then rename it over ``path`` if it is still ``expected``.
+
+    The check is made as late as possible but is not atomic with the rename, see the module docstring.
+    """
     temporary: str | None = None
     try:
         with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f".{path.name}.", delete=False) as file:
             temporary = file.name
             file.write(data)
+        if FileIdentity.of(path) != expected:
+            Path(temporary).unlink(missing_ok=True)
+            raise ReportFileError(f"{path} changed while the collection ran; it was not overwritten")
         os.replace(temporary, path)
     except OSError as exc:
         if temporary is not None:

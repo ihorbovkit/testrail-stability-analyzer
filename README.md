@@ -1006,6 +1006,14 @@ stability-plan-1108517-p105-s50343-60d-20261014-110500.xlsx
   not overwritten, also with `--overwrite-report` (exit code `1`; the
   summary is still printed). If the existing file was deleted meanwhile,
   the report is created as a new file.
+- **Limitation:** the last check happens immediately before the rename but
+  is not atomic with it, and the tool does not coordinate with other
+  writers. A file another process writes to the same path in that instant
+  is overwritten. When other processes may write the same path, use a
+  directory instead (generated names are never reused or overwritten).
+- A report is listed as written only if its path still names the file
+  this command created when writing finishes; if another process replaced
+  it meanwhile, the command fails (exit code `1`) and that file is kept.
 - Missing or unwritable directories are reported before any TestRail
   request. New report files are readable by the owner only (mode `0600`).
 

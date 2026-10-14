@@ -20,7 +20,7 @@ from __future__ import annotations
 import shutil
 import threading
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from enum import StrEnum
 from typing import Final, TextIO
 
@@ -65,11 +65,16 @@ class ConsoleProgress:
         tty: bool,
         interval: float = DEFAULT_INTERVAL_SECONDS,
         stage_phases: Mapping[Stage, int] | None = None,
+        optional_phases: Collection[int] = (),
         clock: Callable[[], float] = time.monotonic,
         width: Callable[[], int] | None = None,
         tick_seconds: float = TICK_SECONDS,
     ) -> None:
-        """``phases``: names in execution order. ``stage_phases``: 1-based phase entered on a stage event."""
+        """``phases``: names in execution order. ``stage_phases``: 1-based phase entered on a stage event.
+
+        ``optional_phases``: 1-based phases whose requests fetch optional report
+        metadata; an exhausted budget there does not make the collection partial.
+        """
         if not phases:
             raise ValueError("at least one phase is required")
         self._stream = stream
@@ -77,6 +82,7 @@ class ConsoleProgress:
         self._tty = tty
         self._interval = interval
         self._stage_phases = dict(stage_phases or {})
+        self._optional_phases = frozenset(optional_phases)
         self._clock = clock
         self._width = width or (lambda: shutil.get_terminal_size((100, 24)).columns)
         self._tick_seconds = tick_seconds
@@ -89,7 +95,9 @@ class ConsoleProgress:
         self._detail = ""
         self._requests = 0
         self._budget: int | None = None
-        self._budget_exhausted = False
+        self._budget_exhausted = False  # during collection (not optional metadata): coverage is partial
+        self._metadata_incomplete = False  # the budget ran out during an optional metadata phase
+        self._budget_phases: set[int] = set()  # phases in which a request was refused
         self._budget_warned: set[float] = set()
         self._pending: tuple[str, float] | None = None  # endpoint, sent at
         self._next_slow_warning = SLOW_REQUEST_SECONDS
@@ -161,7 +169,16 @@ class ConsoleProgress:
                 case BudgetExhausted():
                     self._pending = self._retry = None
                     self._requests, self._budget = event.requests_made, event.budget
-                    if not self._budget_exhausted:
+                    self._budget_phases.add(self._phase)
+                    if self._phase in self._optional_phases:
+                        if not self._budget_exhausted and not self._metadata_incomplete:
+                            self._line(
+                                f"Request budget exhausted ({event.requests_made}/{event.budget}) while fetching "
+                                "optional report metadata; collected results are unaffected, "
+                                "some report metadata may be missing"
+                            )
+                        self._metadata_incomplete = True
+                    elif not self._budget_exhausted:
                         self._budget_exhausted = True
                         self._line(
                             f"Request budget exhausted ({event.requests_made}/{event.budget}); "
@@ -206,7 +223,10 @@ class ConsoleProgress:
 
     def _end_phase(self) -> None:
         took = _duration(self._clock() - self._phase_started_at)
-        note = " (request budget exhausted)" if self._budget_exhausted else ""
+        note = ""
+        if self._phase in self._budget_phases:
+            note = " (request budget exhausted"
+            note += "; report metadata may be missing)" if self._phase in self._optional_phases else ")"
         self._line(f"Phase {self._phase}/{len(self._phases)} ended after {took}{note}")
 
     def _final_text(self, outcome: Outcome, detail: str | None) -> str:
@@ -217,7 +237,8 @@ class ConsoleProgress:
         suffix = f": {detail}" if detail else ""
         match outcome:
             case Outcome.COMPLETED if self._phase == total:
-                return f"Completed all {total} phases in {elapsed}{api}"
+                metadata = "; some report metadata missing (request budget)" if self._metadata_incomplete else ""
+                return f"Completed all {total} phases in {elapsed}{metadata}{api}"
             case Outcome.COMPLETED:
                 return f"Finished after {where} in {elapsed}{api}"
             case Outcome.PARTIAL:

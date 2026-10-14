@@ -275,6 +275,42 @@ class OwnedCleanupTests(FileTestCase):
                 write_reports([(target, b"x")], BASE)
         self.assertEqual(path.read_text(), "other report")
 
+    def test_takeover_while_writing_is_not_reported_as_written(self):
+        for target in (ReportTarget.parse("XML", str(self.dir / "mine.xml"), ".xml"), self.auto()):
+            with self.subTest(automatic=target.automatic):
+                original = report_files._Created.create
+
+                def create(path):
+                    created = original(path)
+                    self.take_over(path)  # the other process replaces the name before the write finishes
+                    return created
+
+                with mock.patch.object(report_files._Created, "create", side_effect=create):
+                    with self.assertRaises(ReportFileError) as ctx:
+                        write_reports([(target, b"mine")], BASE)
+                self.assertIn("replaced by another file while writing", str(ctx.exception))
+                self.assertEqual(ctx.exception.written, ())
+                for path in self.dir.iterdir():
+                    self.assertEqual(path.read_text(), "other report")
+                    path.unlink()
+
+    def test_overwrite_rechecks_the_file_immediately_before_the_rename(self):
+        explicit = self.dir / "mine.xml"
+        explicit.write_text("old")
+        target = authorize_overwrite(ReportTarget.parse("XML", str(explicit), ".xml"), overwrite=True)
+        real = tempfile.NamedTemporaryFile
+
+        def temporary(*args, **kwargs):
+            self.take_over(explicit)  # replaced after the first check, while the report is being written
+            return real(*args, **kwargs)
+
+        with mock.patch.object(report_files.tempfile, "NamedTemporaryFile", side_effect=temporary):
+            with self.assertRaises(ReportFileError) as ctx:
+                write_reports([(target, b"new")], BASE)
+        self.assertIn("changed while the collection ran", str(ctx.exception))
+        self.assertEqual(explicit.read_text(), "other report")
+        self.assertEqual(self.names(), ["mine.xml"])  # temporary file removed
+
 
 if __name__ == "__main__":
     unittest.main()

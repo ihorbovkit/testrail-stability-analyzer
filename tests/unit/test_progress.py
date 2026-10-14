@@ -330,6 +330,39 @@ class ConsoleProgressTests(unittest.TestCase):
         self.assertIn("Request budget 95% used (19/20)", output)
         self.assertEqual(output.count("Request budget exhausted (20/20)"), 1)
 
+    def test_budget_exhausted_by_optional_metadata_is_not_partial_collection(self):
+        progress, stream, _ = reporter(
+            phases=("Setup", "Discovery", "Collection", "Metadata", "Reports"), optional_phases={4}
+        )
+        for index in (1, 2, 3, 4):
+            progress.phase(index)
+        progress(BudgetExhausted(20, 20))
+        progress(BudgetExhausted(20, 20))
+        progress.phase(5)
+        progress.finish(Outcome.COMPLETED)
+        lines = [line.split("] ", 1)[1] for line in stream.getvalue().splitlines()]
+
+        warnings = [line for line in lines if "Request budget exhausted (20/20)" in line]
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("optional report metadata", warnings[0])
+        self.assertNotIn("partial", stream.getvalue().lower())
+        self.assertIn("Phase 4/5 ended after 0s (request budget exhausted; report metadata may be missing)", lines)
+        self.assertIn("Phase 5/5 ended after 0s", lines)  # the note belongs to the affected phase only
+        self.assertIn("Completed all 5 phases", lines[-1])
+        self.assertIn("some report metadata missing (request budget)", lines[-1])
+
+    def test_budget_note_is_attached_only_to_the_phase_where_it_ran_out(self):
+        progress, stream, _ = reporter(phases=("Setup", "Discovery", "Collection", "Reports"))
+        progress.phase(3)
+        progress(BudgetExhausted(20, 20))
+        progress.phase(4)
+        progress.finish(Outcome.PARTIAL)
+        lines = [line.split("] ", 1)[1] for line in stream.getvalue().splitlines()]
+
+        self.assertIn("Phase 3/4 ended after 0s (request budget exhausted)", lines)
+        self.assertIn("Phase 4/4 ended after 0s", lines)
+        self.assertIn("request budget exhausted", lines[-1])  # the collection itself is partial
+
     def test_partial_and_failed_runs_never_report_completion(self):
         cases = [
             (Outcome.PARTIAL, None, "Finished with PARTIAL coverage", "all 3 phases ran; request budget exhausted"),

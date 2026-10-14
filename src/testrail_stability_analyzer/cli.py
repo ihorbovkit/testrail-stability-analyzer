@@ -302,6 +302,7 @@ def _progress(args: argparse.Namespace, err: TextIO, environ: Mapping[str, str] 
         tty=mode == "tty",
         interval=args.progress_interval,
         stage_phases={Stage.DISCOVERY: PHASE_DISCOVERY, Stage.COLLECTION: PHASE_COLLECTION},
+        optional_phases={PHASE_REPORT_METADATA},
     )
 
 

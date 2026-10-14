@@ -34,6 +34,7 @@ from datetime import datetime
 from ..api import TestRailClient, TestRailHTTPError, TestRailRequestBudgetExceeded
 from ..config.settings import FilterSettings, Settings
 from ..models import Plan, Run
+from ..progress import DiscoveryProgress, ProgressListener, ignore_progress
 from .classification import classify_run
 from .models import (
     DimensionValue,
@@ -70,23 +71,32 @@ class SamplePlanSelection:
 
 
 class RunDiscovery:
-    def __init__(self, client: TestRailClient, settings: Settings) -> None:
+    def __init__(
+        self, client: TestRailClient, settings: Settings, *, progress: ProgressListener = ignore_progress
+    ) -> None:
+        """``progress`` receives cumulative :class:`~..progress.DiscoveryProgress` counts."""
         self._client = client
         self._settings = settings
+        self._progress = progress
 
     def discover(self, lookback_start: datetime | None) -> DiscoveryResult:
         found: dict[int, DiscoveredRun] = {}
         limitations: list[str] = []
         budget_exhausted = False
+        plans_fetched = 0
         try:
             for run in self._standalone_runs(lookback_start):
                 self._add(found, run, None, lookback_start)
+            self._report(found, plans_fetched)
             for plan in self._plans(lookback_start):
                 detailed = self._client.get_plan(plan.id)
+                plans_fetched += 1
                 for run in detailed.runs:
                     self._add(found, run, detailed, lookback_start)
+                self._report(found, plans_fetched)
         except TestRailRequestBudgetExceeded:
             budget_exhausted = True
+            self._report(found, plans_fetched)  # runs added from pages listed before the budget ran out
             limitations.append("request budget exhausted during run discovery; some runs were not discovered")
         if lookback_start is not None:
             limitations.append(
@@ -115,8 +125,12 @@ class RunDiscovery:
         limitations: list[str] = []
         known: dict[int, Plan] = dict(plans or {})
         budget_exhausted = False
+        total = len(plan_ids) + len(run_ids)
+        done = 0
         try:
             for plan_id in plan_ids:
+                self._report(found, len(known), targets_done=done, targets_total=total)
+                done += 1
                 plan = known.get(plan_id) or self._fetch(SelectionKind.PLAN, plan_id, self._client.get_plan, invalid)
                 if plan is None or not self._in_project(SelectionKind.PLAN, plan_id, plan.project_id, invalid):
                     continue
@@ -126,6 +140,8 @@ class RunDiscovery:
                 for run in plan.runs:
                     self._add(found, run, plan, None)
             for run_id in run_ids:
+                self._report(found, len(known), targets_done=done, targets_total=total)
+                done += 1
                 if run_id in found:
                     continue  # already selected through its plan
                 run = self._fetch(SelectionKind.RUN, run_id, self._client.get_run, invalid)
@@ -145,8 +161,10 @@ class RunDiscovery:
                     if parent is not None:
                         known[run.plan_id] = parent
                 self._add(found, run, parent, None)
+            self._report(found, len(known), targets_done=done, targets_total=total)
         except TestRailRequestBudgetExceeded:
             budget_exhausted = True
+            self._report(found, len(known), targets_done=done, targets_total=total)
             limitations.append("request budget exhausted while resolving selected plans and runs")
         if invalid:
             limitations.append(f"{len(invalid)} selected plan/run ID(s) could not be collected")
@@ -191,7 +209,21 @@ class RunDiscovery:
         if len(candidates) < len(listed):
             notes.append(f"{len(listed) - len(candidates)} plan(s) do not match naming.plan_name_patterns")
         inspected: list[int] = []
-        for summary in candidates[:max_candidates]:
+        limit = min(len(candidates), max_candidates)
+
+        def report(attempted: int) -> None:
+            self._progress(
+                DiscoveryProgress(
+                    plans_fetched=len(inspected),
+                    plans_listed=len(listed),
+                    targets_done=attempted,
+                    targets_total=limit,
+                    target_kind="candidate plans",
+                )
+            )
+
+        report(0)
+        for attempted, summary in enumerate(candidates[:max_candidates], start=1):
             try:
                 plan = self._client.get_plan(summary.id)
             except TestRailRequestBudgetExceeded:
@@ -201,8 +233,10 @@ class RunDiscovery:
                 if exc.status not in _INVALID_ID_REASONS:
                     raise
                 notes.append(f"plan {summary.id} {_INVALID_ID_REASONS[exc.status]} (HTTP {exc.status})")
+                report(attempted)  # an invalid candidate counts as attempted
                 continue
             inspected.append(plan.id)
+            report(attempted)
             if any(self._decision(run, plan) is RunDecision.INCLUDED for run in plan.runs):
                 return SamplePlanSelection(plan, len(listed), tuple(inspected), tuple(notes))
             notes.append(f"plan {plan.id} has no run eligible under the configured suite, naming patterns and filters")
@@ -211,6 +245,21 @@ class RunDiscovery:
         if not listed:
             notes.append("no plans found" + (" within the lookback period" if lookback_start is not None else ""))
         return SamplePlanSelection(None, len(listed), tuple(inspected), tuple(notes))
+
+    def _report(
+        self,
+        found: Mapping[int, DiscoveredRun],
+        plans_fetched: int,
+        *,
+        targets_done: int = 0,
+        targets_total: int | None = None,
+    ) -> None:
+        included = sum(1 for run in found.values() if run.included)
+        self._progress(
+            DiscoveryProgress(
+                plans_fetched, len(found), included, targets_done=targets_done, targets_total=targets_total
+            )
+        )
 
     # -- targeted helpers ----------------------------------------------------
 

@@ -22,19 +22,39 @@ from typing import Any, Final
 from ..analysis.models import AnalysisReport
 from ..collection.models import CollectionReport
 from ..config.settings import Settings
-from .report_data import GREEN, NEUTRAL, RED, YELLOW, Cell, ReportContent, Worksheet, build_report, safe_text
+from .report_data import (
+    GREEN,
+    NEUTRAL,
+    OVERVIEW_GREEN,
+    OVERVIEW_NEUTRAL,
+    OVERVIEW_RED,
+    OVERVIEW_YELLOW,
+    RED,
+    YELLOW,
+    Cell,
+    ReportContent,
+    Worksheet,
+    build_report,
+    safe_text,
+)
 
 INSTALL_HINT: Final = (
     'XLSX reports need the optional openpyxl package: pip install "openpyxl>=3.1,<4" '
     "(or: poetry install --extras xlsx)"
 )
 AUTHOR: Final = "testrail-stability-analyzer"
+OVERVIEW_FONT: Final = "1F1F1F"
 # (font colour, fill colour) per report style; the same palette as the XML report.
 _COLOURS: Final = {
     GREEN: ("006100", "C6EFCE"),
     YELLOW: ("9C5700", "FFEB9C"),
     RED: ("9C0006", "FFC7CE"),
     NEUTRAL: ("3F3F3F", "EDEDED"),
+    # Stability Overview: the same fills (historical Pass Rate) with one dark, neutral font for every status.
+    OVERVIEW_GREEN: (OVERVIEW_FONT, "C6EFCE"),
+    OVERVIEW_YELLOW: (OVERVIEW_FONT, "FFEB9C"),
+    OVERVIEW_RED: (OVERVIEW_FONT, "FFC7CE"),
+    OVERVIEW_NEUTRAL: (OVERVIEW_FONT, "EDEDED"),
 }
 _HEADER_FILL: Final = "D9D9D9"
 _NUMBER_FORMATS: Final = {"percent": "0.0%", "datetime": "yyyy-mm-dd hh:mm"}

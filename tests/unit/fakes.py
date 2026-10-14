@@ -37,7 +37,7 @@ def ok(payload, status=200, headers=None):
     return HttpResponse(status=status, body=json.dumps(payload).encode(), headers=headers or {})
 
 
-def make_client(*responses, base_url="https://example.testrail.io", http=None, sleep=None):
+def make_client(*responses, base_url="https://example.testrail.io", http=None, sleep=None, progress=None):
     """Retries are disabled unless ``http`` enables them; ``sleep`` never waits for real."""
     settings = settings_from_mapping(
         {
@@ -47,5 +47,6 @@ def make_client(*responses, base_url="https://example.testrail.io", http=None, s
     )
     transport = FakeTransport(*responses)
     credentials = FakeCredentialProvider()
-    client = TestRailClient(settings, credentials, transport, sleep=sleep or (lambda seconds: None))
+    sleep = sleep or (lambda seconds: None)
+    client = TestRailClient(settings, credentials, transport, sleep=sleep, progress=progress or (lambda event: None))
     return client, transport, credentials

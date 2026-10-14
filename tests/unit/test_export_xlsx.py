@@ -67,8 +67,8 @@ class WorkbookTests(unittest.TestCase):
         self.assertEqual(list(rows), list(range(100, 109)))  # one row per case, numeric IDs
         cases = {
             100: ("Passed", "C6EFCE"),
-            101: ("Failed", "FFC7CE"),
-            102: ("Passed", "FFEB9C"),
+            101: ("Failed", "EDEDED"),  # too few conclusive executions for a Pass Rate band
+            102: ("Passed", "FFEB9C"),  # 60% Pass Rate
             104: ("Not Applicable", "EDEDED"),
             106: ("Partial", "EDEDED"),
             108: ("No History", "EDEDED"),

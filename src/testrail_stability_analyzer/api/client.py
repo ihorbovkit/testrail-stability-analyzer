@@ -39,6 +39,14 @@ from ..models import (
     Suite,
     Test,
 )
+from ..progress import (
+    BudgetExhausted,
+    ProgressListener,
+    RequestFinished,
+    RequestStarted,
+    RetryScheduled,
+    ignore_progress,
+)
 from .errors import (
     TestRailAuthenticationError,
     TestRailAuthorizationError,
@@ -76,7 +84,9 @@ class TestRailClient:
         transport: HttpTransport | None = None,
         *,
         sleep: Callable[[float], None] = time.sleep,
+        progress: ProgressListener = ignore_progress,
     ) -> None:
+        """``progress`` receives request, retry, and budget events (endpoint paths and counts only)."""
         self._base_url = settings.testrail.base_url
         self._http = settings.http
         self._credential_provider = credential_provider
@@ -84,6 +94,7 @@ class TestRailClient:
         self._sleep = sleep
         self._authorization: str | None = None
         self._requests_made = 0
+        self._progress = progress
 
     @property
     def requests_made(self) -> int:
@@ -348,17 +359,20 @@ class TestRailClient:
     def _request(self, url: str) -> Any:
         """Send one logical request, retrying temporary failures within the configured bounds."""
         endpoint = url.partition("?")[2]
+        # Path only (no query string) for progress events.
+        path = endpoint.removeprefix(API_PREFIX).partition("&")[0]
         attempt = 0
         last_error: TestRailError | None = None
         while True:
             attempt += 1
             if self._requests_made >= self._http.max_requests_per_execution:
+                self._progress(BudgetExhausted(self._requests_made, self._http.max_requests_per_execution))
                 message = f"maximum of {self._http.max_requests_per_execution} API requests per execution reached"
                 if last_error is not None:
                     message += f" while retrying {endpoint} after: {last_error}"
                 raise TestRailRequestBudgetExceeded(message) from last_error
             try:
-                response = self._send(url, endpoint)
+                response = self._send(url, endpoint, path, attempt)
                 _raise_for_status(response)
             except (TestRailNetworkError, TestRailHTTPError) as exc:
                 exc.attempts = attempt
@@ -370,6 +384,9 @@ class TestRailClient:
                 last_error = exc
                 # Without budget for another attempt, the check above raises; don't wait first.
                 if self._requests_made < self._http.max_requests_per_execution:
+                    self._progress(
+                        RetryScheduled(path, _retry_reason(exc), delay, attempt + 1, self._http.max_retries + 1)
+                    )
                     self._sleep(delay)
                 continue
             try:
@@ -395,9 +412,10 @@ class TestRailClient:
         backoff = self._http.retry_backoff_seconds * 2 ** (attempt - 1)
         return min(backoff, self._http.max_retry_delay_seconds)
 
-    def _send(self, url: str, endpoint: str) -> HttpResponse:
+    def _send(self, url: str, endpoint: str, path: str, attempt: int) -> HttpResponse:
         headers = self._headers()
         self._requests_made += 1
+        self._progress(RequestStarted(path, attempt, self._requests_made, self._http.max_requests_per_execution))
         try:
             response = self._transport.get(
                 url,
@@ -406,9 +424,12 @@ class TestRailClient:
                 read_timeout=self._http.read_timeout_seconds,
             )
         except TransportTimeout as exc:
+            self._progress(RequestFinished(path, None))
             raise TestRailTimeoutError(f"{endpoint}: {exc}") from exc
         except TransportError as exc:
+            self._progress(RequestFinished(path, None))
             raise TestRailNetworkError(f"{endpoint}: {exc}") from exc
+        self._progress(RequestFinished(path, response.status))
         return response
 
 
@@ -477,6 +498,17 @@ def _run_matches(run: Run, params: Mapping[str, QueryValue]) -> bool:
         if key in params and str(actual) not in str(params[key]).split(","):
             return False
     return True
+
+
+def _retry_reason(error: TestRailError) -> str:
+    """A fixed description of a retryable error, never the (untrusted) message text."""
+    if isinstance(error, TestRailRateLimitError):
+        return "rate limited (HTTP 429)"
+    if isinstance(error, TestRailTimeoutError):
+        return "timeout"
+    if isinstance(error, TestRailHTTPError):
+        return f"HTTP {error.status}"
+    return "network error"
 
 
 def _is_retryable(error: TestRailError) -> bool:

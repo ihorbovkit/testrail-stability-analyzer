@@ -1,0 +1,163 @@
+import os
+import stat
+import tempfile
+import unittest
+from datetime import UTC, datetime, timedelta, timezone
+from pathlib import Path
+
+from testrail_stability_analyzer.export.report_files import (
+    ReportFileError,
+    ReportTarget,
+    report_basename,
+    report_scope,
+    target_problem,
+    write_reports,
+)
+
+MOMENT = datetime(2026, 10, 13, 16, 49, 0, tzinfo=UTC)
+BASE = "stability-project-p105-s50343-90d-20261013-164900"
+
+
+class NameTests(unittest.TestCase):
+    def test_scopes(self):
+        cases = [
+            ("project", {}, "project"),
+            ("plan", {"plan_ids": (1108517,)}, "plan-1108517"),
+            ("plan", {"plan_ids": (1, 2), "run_ids": (5,)}, "plan-1_2-run-5"),
+            ("run", {"run_ids": (5,), "plan_ids": (1,)}, "run-5-plan-1"),
+            ("run", {"run_ids": (5, 6, 7, 8, 9)}, "run-5_6_7+2more"),
+            ("plan", {"plan_ids": (3, 3)}, "plan-3"),
+            ("sample", {}, "sample"),
+            ("sample", {"sample_plan_id": 900}, "sample-plan-900"),
+        ]
+        for target, ids, expected in cases:
+            with self.subTest(target=target, ids=ids):
+                self.assertEqual(report_scope(target, **ids), expected)
+
+    def test_basename_uses_utc(self):
+        self.assertEqual(report_basename("project", 105, 50343, 90, MOMENT), BASE)
+        local = MOMENT.astimezone(timezone(timedelta(hours=2)))  # 18:49 local time
+        self.assertEqual(report_basename("project", 105, 50343, 90, local), BASE)
+        self.assertEqual(
+            report_basename("plan-1108517", 105, None, 60, MOMENT), "stability-plan-1108517-p105-60d-20261013-164900"
+        )
+
+
+class FileTestCase(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.dir = Path(directory.name)
+
+    def auto(self, label="XLSX", extension=".xlsx"):
+        return ReportTarget.parse(label, f"{self.dir}/", extension)
+
+    def names(self):
+        return sorted(path.name for path in self.dir.iterdir())
+
+
+class TargetTests(FileTestCase):
+    def test_directory_detection(self):
+        self.assertTrue(ReportTarget.parse("XML", str(self.dir), ".xml").automatic)  # existing directory
+        self.assertTrue(ReportTarget.parse("XML", f"{self.dir}/new/", ".xml").automatic)  # trailing separator
+        self.assertFalse(ReportTarget.parse("XML", str(self.dir / "r.xml"), ".xml").automatic)
+
+    def test_problems(self):
+        existing = self.dir / "r.xml"
+        existing.write_text("old")
+        cases = [
+            (f"{self.dir}/missing/", False, "does not exist"),
+            (str(self.dir / "missing" / "r.xml"), False, "does not exist"),
+            (f"{existing}/", False, "does not exist"),  # a file named as a directory
+            (str(existing), False, "already exists; pass --overwrite-report"),
+            (str(existing), True, None),
+            (str(self.dir), False, None),
+            (str(self.dir / "new.xml"), False, None),
+        ]
+        for raw, overwrite, expected in cases:
+            with self.subTest(raw=raw, overwrite=overwrite):
+                problem = target_problem(ReportTarget.parse("XML", raw, ".xml"), overwrite=overwrite)
+                if expected is None:
+                    self.assertIsNone(problem)
+                else:
+                    self.assertIn(expected, problem)
+
+    def test_dangling_symlink_counts_as_existing(self):
+        link = self.dir / "r.xml"
+        link.symlink_to(self.dir / "nowhere.xml")
+        self.assertIn("already exists", target_problem(ReportTarget.parse("XML", str(link), ".xml"), overwrite=False))
+
+    @unittest.skipIf(os.geteuid() == 0, "root can write anywhere")
+    def test_unwritable_directory(self):
+        locked = self.dir / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        self.addCleanup(locked.chmod, 0o700)
+        for raw in (str(locked), str(locked / "r.xml")):
+            with self.subTest(raw=raw):
+                self.assertIn("not writable", target_problem(ReportTarget.parse("XML", raw, ".xml"), overwrite=False))
+
+
+class WriteTests(FileTestCase):
+    def test_automatic_names_are_unique_within_one_second(self):
+        first = write_reports([(self.auto(), b"1")], BASE, overwrite=False)
+        second = write_reports([(self.auto(), b"2")], BASE, overwrite=False)
+        third = write_reports([(self.auto(), b"3")], BASE, overwrite=True)  # never reuses a generated name
+
+        self.assertEqual([path.name for _, path in first + second + third],
+                         [f"{BASE}.xlsx", f"{BASE}-2.xlsx", f"{BASE}-3.xlsx"])  # fmt: skip
+        self.assertEqual([path.read_bytes() for _, path in first + second + third], [b"1", b"2", b"3"])
+        self.assertTrue(all(path.is_absolute() for _, path in first + second))
+
+    def test_formats_share_one_basename_and_suffix(self):
+        (self.dir / f"{BASE}.xml").write_text("someone else's report")
+        written = write_reports([(self.auto("XML", ".xml"), b"x"), (self.auto(), b"y")], BASE, overwrite=False)
+
+        self.assertEqual([(label, path.name) for label, path in written],
+                         [("XML", f"{BASE}-2.xml"), ("XLSX", f"{BASE}-2.xlsx")])  # fmt: skip
+        self.assertEqual((self.dir / f"{BASE}.xml").read_text(), "someone else's report")
+        self.assertNotIn(f"{BASE}.xlsx", self.names())  # the free single-format name is not used
+
+    def test_new_files_are_private(self):
+        ((_, path),) = write_reports([(self.auto(), b"x")], BASE, overwrite=False)
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+
+    def test_explicit_file_is_never_overwritten_without_permission(self):
+        explicit = self.dir / "mine.xml"
+        explicit.write_text("old")
+        target = ReportTarget.parse("XML", str(explicit), ".xml")
+        with self.assertRaises(ReportFileError) as ctx:
+            write_reports([(target, b"new")], BASE, overwrite=False)
+        self.assertIn("already exists", str(ctx.exception))
+        self.assertEqual(explicit.read_text(), "old")
+
+        ((_, path),) = write_reports([(target, b"new")], BASE, overwrite=True)
+        self.assertEqual((path, explicit.read_text()), (explicit, "new"))
+        self.assertEqual(self.names(), ["mine.xml"])  # no temporary file left
+
+    def test_symlink_is_not_followed(self):
+        victim = self.dir / "victim.txt"
+        victim.write_text("keep")
+        link = self.dir / "r.xml"
+        link.symlink_to(victim)
+        with self.assertRaises(ReportFileError):
+            write_reports([(ReportTarget.parse("XML", str(link), ".xml"), b"x")], BASE, overwrite=False)
+        self.assertEqual(victim.read_text(), "keep")
+
+    def test_failure_keeps_written_reports_and_removes_reserved_ones(self):
+        (self.dir / "taken.xlsx").write_text("old")
+        ok = ReportTarget.parse("XML", str(self.dir / "fresh.xml"), ".xml")
+        taken = ReportTarget.parse("XLSX", str(self.dir / "taken.xlsx"), ".xlsx")
+        automatic = ReportTarget.parse("XML", f"{self.dir}/auto/", ".xml")
+        (self.dir / "auto").mkdir()
+        with self.assertRaises(ReportFileError) as ctx:
+            write_reports([(ok, b"1"), (taken, b"2"), (automatic, b"3")], BASE, overwrite=False)
+
+        self.assertEqual([label for label, _ in ctx.exception.written], ["XML"])
+        self.assertIn("could not write the XLSX report", str(ctx.exception))
+        self.assertEqual(sorted(p.name for p in (self.dir / "auto").iterdir()), [])  # reservation removed
+        self.assertEqual((self.dir / "fresh.xml").read_bytes(), b"1")
+
+
+if __name__ == "__main__":
+    unittest.main()

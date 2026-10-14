@@ -718,13 +718,28 @@ the latest status of that combination, or a state:
 | Not Run | no execution, or none within the history window |
 | Passed, Failed, Blocked, Automation Issue, Retest, Unknown Status | otherwise: the latest known status, also when history is insufficient |
 
-Colour follows the shown status (green Passed, red Failed, yellow Automation
-Issue, grey otherwise); an `Inconsistent` diagnosis turns the cell yellow
-while keeping the status. **Green Passed means the latest result passed, not
-that stability is confirmed**: the cell's note shows the diagnosis,
-confidence, executions, pass rate, coverage, and latest result date, and,
-for a latest status of Blocked, `Blocked reason: <reason>` (see
-[Blocked reason](#blocked-reason)).
+The **text** is the latest execution status (or state above), in one dark,
+neutral font. The **background** is the historical **Pass Rate** of the
+combination: passed / conclusive executions (passed + failed + automation
+issue, one per distinct run in the history window), compared as an exact
+fraction without rounding:
+
+| Background | When |
+|---|---|
+| Green | Pass Rate ≥ 90% |
+| Yellow | Pass Rate ≥ 50% and < 90% |
+| Red | Pass Rate < 50% |
+| Grey | fewer conclusive executions than `analysis.min_executions` (or none), and always for Partial, Not Applicable, Not Run, Applicability Unresolved, and No History |
+
+Neither the latest status nor the diagnosis changes the background: a
+`Failed` cell with a 95% Pass Rate is green, a `Passed` cell with 20% is red,
+and an `Inconsistent` history with 95% is green. Blocked, retest, not run,
+and unknown executions do not count as conclusive. The cell's note shows the
+diagnosis, confidence, executions, pass rate, coverage, and latest result
+date, and, for a latest status of Blocked, `Blocked reason: <reason>` (see
+[Blocked reason](#blocked-reason)). The XML report has no Overview worksheet,
+so this colouring is XLSX-only; Stability Details keep the colours below in
+both formats.
 
 **`Stability Details`** (the XML `Stability` worksheet): one row per Test Case
 ID, sorted by ID.
@@ -748,6 +763,9 @@ Each combination is analyzed independently.
 combination; when a resolved applicability value excludes the application,
 `N/A` is shown instead. Histories of runs with an unidentified application or platform
 cannot be placed in a combination column; they are counted in `Report Info`.
+
+Stability Details colours (both formats; the Overview uses the Pass Rate
+bands above):
 
 | Colour | Diagnosis / latest status |
 |---|---|
@@ -893,9 +911,16 @@ git-ignored directory (`reports/`, `output/`).
 PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml
 PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml \
     --xlsx-report reports/stability.xlsx
-# Both formats in one run (metadata is fetched once):
+# A directory: a unique timestamped file name is generated (never overwrites):
 PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml \
-    --xlsx-report reports/stability.xlsx --xml-report reports/stability.xml
+    --xlsx-report reports/
+# Both formats in one run (metadata is fetched once; same base name, different extension):
+PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --config config/local/config.toml \
+    --xlsx-report reports/ --xml-report reports/
+# Project-wide: every run of the project within the lookback (suite, naming and filters apply):
+PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect project --config config/local/config.toml \
+    --suite-id 1 --window-days 90 --lookback-days 180 --max-runs 20 --max-requests 3000 \
+    --xlsx-report reports/
 ```
 
 | Command | Collects |
@@ -903,6 +928,7 @@ PYTHONPATH=src python3.13 -m testrail_stability_analyzer collect plan 1234 --con
 | `collect plan PLAN_ID [PLAN_ID ...] [--run-id RUN_ID ...]` | the selected plans (and runs) |
 | `collect run RUN_ID [RUN_ID ...] [--plan-id PLAN_ID ...]` | the selected runs (and plans) |
 | `collect sample [--max-candidates N]` | the newest eligible plan; defaults `--max-results 15 --max-requests 20` |
+| `collect project` | every run of the project within the lookback ([project-wide](#project-wide-collection)) |
 
 Options for all commands (each overrides the configuration file; all values
 are validated like the file):
@@ -916,11 +942,16 @@ are validated like the file):
 | `--max-results N` | `collection.max_results` (`0` = no cap) |
 | `--max-requests N` | `http.max_requests_per_execution` |
 | `--window-days N` / `--lookback-days N` | `history.window_days` / `history.lookback_limit_days` |
-| `--xlsx-report PATH` | also write the [XLSX report](#reports) (needs `openpyxl`); the directory must exist |
-| `--xml-report PATH` | also write the [XML report](#reports); the directory must exist |
+| `--max-runs N` | `history.max_runs` (distinct runs per case/application/platform; must be ≥ `analysis.min_executions`) |
+| `--xlsx-report PATH` | also write the [XLSX report](#reports) (needs `openpyxl`) to a file, or to a directory with a [generated name](#report-file-names); the directory must exist |
+| `--xml-report PATH` | also write the [XML report](#reports) to a file or a directory, as above |
+| `--overwrite-report` | replace an existing report file named explicitly (generated names are never reused) |
+| `--progress {auto,tty,plain,off}` | live [progress](#progress-output) on stderr (default `auto`) |
+| `--progress-interval SECONDS` | seconds between plain status lines (default `15`) |
 
 The command-line selection replaces `collection.plan_ids`/`run_ids` from the
-configuration file. Secrets cannot be passed as arguments.
+configuration file (`collect sample` and `collect project` use none).
+Secrets cannot be passed as arguments.
 
 `collect sample` lists the project's plans created within the lookback
 (paginated, newest first), skips plans whose name does not match
@@ -938,16 +969,151 @@ or from capped streams), status categories, grouping, coverage, states, API
 requests, and limitations (with a report option, also Feature / Test Group
 counts). Plan and run names, section names, comment text, defect
 identifiers, URLs, and credentials are never printed. No files are written
-unless `--xlsx-report` or `--xml-report` is given.
+unless `--xlsx-report` or `--xml-report` is given; the absolute path of each
+written report is printed last.
+
+### Report file names
+
+A report option that names a **directory** (an existing one, or any path
+ending with `/`) gets a generated file name:
+
+```text
+stability-{scope}-p{project_id}-s{suite_id}-{window}d-{YYYYMMDD-HHMMSS}.{xlsx|xml}
+
+stability-project-p105-s50343-90d-20261013-164900.xlsx
+stability-plan-1108517-p105-s50343-60d-20261014-110500.xlsx
+```
+
+- `scope` is `project`, `plan-<ids>[-run-<ids>]`, `run-<ids>[-plan-<ids>]`,
+  or `sample-plan-<id>` (several IDs joined with `_`; more than three are
+  shortened to `<first three>+<n>more`). `-s{suite_id}` is omitted when no
+  suite is configured. `window` is `history.window_days`.
+- The timestamp is the collection time in **UTC**.
+- XLSX and XML requested together into directories share the base name and
+  suffix and differ only in the extension.
+- Files are created exclusively, so an existing file is never overwritten:
+  when the name is taken (for example, two reports in the same second, or
+  by another process), the next free suffix `-2`, `-3`, ... is used for
+  every requested format. `--overwrite-report` does not apply to generated
+  names.
+- An **explicit file path** is used as given. If it already exists, the
+  command stops before any TestRail request (exit code `2`) unless
+  `--overwrite-report` is given; the file is then replaced atomically
+  (temporary file in the same directory, then rename). If the file appears
+  while the collection runs, it is not overwritten (exit code `1`; the
+  summary is still printed).
+- Missing or unwritable directories are reported before any TestRail
+  request. New report files are readable by the owner only (mode `0600`).
 
 | Exit code | Meaning |
 |---|---|
 | `0` | Collection complete (within its selection and lookback) |
-| `1` | Unexpected error or interruption |
-| `2` | Invalid arguments or configuration, unusable report path, or `--xlsx-report` without `openpyxl` |
+| `1` | Unexpected error or interruption, or a report file could not be written |
+| `2` | Invalid arguments or configuration, unusable or existing report path (without `--overwrite-report`), or `--xlsx-report` without `openpyxl` |
 | `3` | Partial collection: result-record cap, request budget, or some invalid IDs |
 | `4` | API or credential error, or no selected plan/run could be collected (no report is written) |
-| `5` | `collect sample` found no eligible plan |
+| `5` | `collect sample` found no eligible plan, or `collect project` found no eligible run (no report is written) |
+
+### Project-wide collection
+
+`collect project` runs `HistoricalCollector` without a plan or run
+selection, so runs are discovered as described in
+[Historical collection](#historical-collection): standalone runs and plans
+created within the lookback, plus older open ones, each plan fetched with
+`get_plan`. The configured suite, naming patterns, and filters decide which
+runs are collected; every other run is listed in the summary with its
+decision. Histories can reach `complete` or `lookback_limited` coverage
+(never `selection_limited`), and the report's Collection mode is
+`project-wide`. Only GET requests are made, as for every command.
+
+- **Request usage** grows with the project: about one `get_plan` per plan in
+  the lookback (including plans later excluded by name or filters), and one
+  or more `get_results_for_run` plus `get_tests` per collected run (see
+  [API request budget](#api-request-budget)). Set `--max-requests` to cover
+  it and keep `--lookback-days` (≥ `--window-days`) as short as the latest
+  known result allows; a lookback of `0` scans the whole project.
+- If the budget runs out, the runs discovered so far are still collected and
+  the report is `PARTIAL` (exit code `3`); if it runs out before any run is
+  discovered, nothing is written.
+- Completed runs and plans created before the lookback start are not
+  discovered, so every history is at most `lookback_limited`.
+- A case appears only if it is a test in a collected run; suite cases never
+  added to such a run are not listed. A case run on only some platforms of
+  an application is shown without history on the others; a case run for only
+  some applications gets no entry for the others.
+- Execution type is not part of the history key: runs of every included
+  execution type contribute to the same case/application/platform history.
+- The summary lists every discovered run, so it is long for a busy project.
+
+### Progress output
+
+While a command runs, progress is written to **stderr**, so it is visible
+from the first second and never mixes with the summary on stdout. The
+summary, report lines, and error messages are printed after the final
+progress line, exactly as without progress; exit codes are unchanged.
+
+Only the phases the command actually executes are shown:
+
+| Phase | Shown | What happens |
+|---|---|---|
+| Configuration and authentication | always | settings, credentials, `get_statuses` (the first request checks the credentials) |
+| Run discovery | always | `project`: list runs and plans, `get_plan` per plan; `plan`/`run`: resolve the selected IDs; `sample`: list and inspect candidate plans |
+| Execution result collection | always | results and tests per included run (open/recent runs first), then case metadata for applicability |
+| Report metadata | with a report option | sections, cases, suites (Feature / Test Group) and case types |
+| Stability analysis | with a report option | deterministic analysis; no requests |
+| Report generation | with a report option | build, render, and write the XML/XLSX files |
+
+Status lines show the phase, time in the phase, the pending request (TestRail
+endpoint path and how long it has been waiting) or retry countdown, API
+requests used versus `--max-requests`, and counts: plans fetched and runs
+found/included during discovery; runs processed out of the current pass,
+runs with results, runs skipped, and result records during collection.
+`X/Y` appears only where the total is known (collection passes, selected IDs,
+sample candidates); there is no ETA or percentage, because the number of
+plans and runs in a project is unknown until discovery ends.
+
+Messages are printed immediately when a request has been pending for 15 s
+(then every 30 s), when TestRail rate-limits or fails temporarily and the
+client retries, when 80 % and 95 % of the request budget are used, when the
+budget is exhausted, and at the end. The final line says *Completed* only
+for a complete run; otherwise it reports *PARTIAL coverage*, *nothing to
+collect*, or the phase in which the command *failed*.
+
+Example (`--progress plain`, as in CI):
+
+```text
+[0s] Phase 1/6: Configuration and authentication (0 completed, 5 remaining after this)
+[0s] Phase 1/6 ended after 0s
+[0s] Phase 2/6: Run discovery (project-wide) (1 completed, 4 remaining after this)
+[15s] Phase 2/6 Run discovery (project-wide) | running 15s | waiting 2s: get_plan/1234 | API 41/3000 | plans fetched 37, runs found 212 (included 148)
+[22s] Rate limited (HTTP 429): retrying get_plan/1291 in 30s (attempt 2 of 4)
+[1m05s] Phase 2/6 ended after 1m05s
+[1m05s] Phase 3/6: Execution result collection (2 completed, 3 remaining after this)
+[1m20s] Phase 3/6 Execution result collection | running 15s | waiting 0s: get_results_for_run/8812 | API 102/3000 | results and tests of runs active in the window: 12/40 runs; runs with results 12, skipped 0; result records 4810
+[2m48s] Slow response: still waiting for TestRail (get_tests/8790, 15s)
+...
+[6m31s] Phase 6/6 ended after 1s
+[6m31s] Completed all 6 phases in 6m31s; API requests 1187/3000
+```
+
+Modes:
+
+- `auto` (default): `tty` when stderr is an interactive terminal (and `TERM`
+  is not `dumb`), otherwise `plain`. Redirected output (`2> file`, pipes) and
+  CI logs therefore get plain lines without control characters.
+- `tty`: phase changes and warnings are permanent lines; one status line with
+  a spinner is redrawn in place every second, truncated to the terminal width.
+- `plain`: phase changes and warnings immediately, plus at most one status
+  line per `--progress-interval` seconds.
+- `off`: no progress output.
+
+Progress shows counts, phase names, IDs in endpoint paths, and elapsed times
+only: never plan or run names, comments, query strings, headers, or
+credentials. A background thread refreshes the output while the main thread
+waits for an HTTP response or a retry delay; it only reads progress state and
+makes no requests. Library users can pass their own listener (`progress=`) to
+`TestRailClient`, `RunDiscovery`, and `HistoricalCollector`; the events are in
+`testrail_stability_analyzer.progress`.
 
 ## Security
 
@@ -983,6 +1149,8 @@ TestRail credentials are entirely separate from any other tool's credentials
 ```text
 src/testrail_stability_analyzer/
 ├── cli.py       command-line interface (also: python -m testrail_stability_analyzer)
+├── progress.py  progress events and listener type (no UI dependencies)
+├── console_progress.py  CLI progress rendering on stderr (tty / plain)
 ├── config/      settings.py (typed settings, validation), auth.py (credential providers)
 ├── api/         client.py (read-only client), transport.py (HTTP), errors.py
 ├── models/      metadata.py, execution.py (typed entities), statuses.py (status resolution)
@@ -992,7 +1160,8 @@ src/testrail_stability_analyzer/
 ├── analysis/    metrics.py, classification.py, defects.py, analyzer.py
 │                (stability analysis and case-level defect aggregation)
 └── export/      report_data.py (shared report content), xlsx.py (XLSX, optional openpyxl),
-                 spreadsheet.py (Excel-compatible XML Spreadsheet 2003)
+                 spreadsheet.py (Excel-compatible XML Spreadsheet 2003),
+                 report_files.py (report file names, collision-safe writing)
 config/config.example.toml
 tests/unit/          mocked unit tests
 tests/integration/   reserved for opt-in live tests
@@ -1028,13 +1197,18 @@ tests/integration/   reserved for opt-in live tests
 - Result-record cap enforced during retrieval, with incomplete outcomes
   marked and reported as partial.
 - macOS Keychain credential provider and provider selection in configuration.
-- Command-line interface (`collect plan`, `collect run`, `collect sample`)
-  with a sanitized summary and exit codes.
+- Command-line interface (`collect plan`, `collect run`, `collect sample`,
+  `collect project`) with a sanitized summary and exit codes.
+- Live CLI progress on stderr (phases, counts, pending requests, retries,
+  request budget) for interactive terminals and CI, via progress events from
+  the client, discovery, and collector.
 - Stability analysis per case/application/platform: distinct-run metrics,
   documented pass-rate denominator, retry/triage and transition metrics,
   deterministic diagnosis and confidence, and coverage limitations.
 - Case-level defect aggregation across applications, platforms, retries,
   and triage records, with provenance.
+- Unique, timestamped report file names for directory outputs, exclusive
+  file creation, and explicit `--overwrite-report`.
 - Native XLSX report (`--xlsx-report`, optional `openpyxl`) with a compact
   Stability Overview, Stability Details, and Report Info.
 - Excel-compatible XML Spreadsheet 2003 report (`--xml-report`) with dynamic
@@ -1101,10 +1275,12 @@ tests/integration/   reserved for opt-in live tests
 - In reports, histories with an unidentified application or platform, or
   with one outside the configured filters, are only counted in `Report Info`
   (separately), not shown in combination columns.
-- The Overview colour follows the latest status, except for `Inconsistent`
-  (yellow). A history diagnosed `automation_issue_evidence` whose latest
-  result passed shows a green Passed; its note and Stability Details show the
-  diagnosis.
+- The Overview background shows the historical Pass Rate, not the latest
+  status or the diagnosis: automation issues lower the Pass Rate like
+  failures, so check the note or Stability Details to tell them apart. A
+  history whose conclusive executions all passed but that also has
+  unclassified statuses is diagnosed Insufficient History yet shown green
+  once it has enough conclusive executions.
 - A defect ID that starts with `=`, `+`, `-`, or `@` and is the first in its
   cell is shown with a leading `'` (formula-injection protection).
 - XLSX column widths are approximations of the shared point widths.

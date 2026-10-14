@@ -43,16 +43,17 @@ class OverviewTests(unittest.TestCase):
 
     def test_statuses_and_states(self):
         _, rows = overview()
+        # Text: latest status or state. Background: historical Pass Rate (min_executions = 5).
         expected = {
-            100: ("Passed", "green"),  # stable
-            101: ("Failed", "red"),
-            102: ("Passed", "yellow"),  # inconsistent keeps the latest status, highlighted
-            103: ("Automation Issue", "yellow"),
-            104: ("Not Applicable", "neutral"),
-            105: ("Not Run", "neutral"),
-            106: ("Partial", "neutral"),
-            107: ("Blocked", "neutral"),  # insufficient history keeps the known latest status
-            108: ("No History", "neutral"),  # only an unidentified run
+            100: ("Passed", "overview_green"),  # 5/5 passed
+            101: ("Failed", "overview_neutral"),  # 2 conclusive executions: too few for a Pass Rate band
+            102: ("Passed", "overview_yellow"),  # inconsistent, 3/5 = 60%: the band, not the diagnosis
+            103: ("Automation Issue", "overview_neutral"),  # 2 conclusive executions
+            104: ("Not Applicable", "overview_neutral"),
+            105: ("Not Run", "overview_neutral"),
+            106: ("Partial", "overview_neutral"),
+            107: ("Blocked", "overview_neutral"),  # insufficient history keeps the known latest status
+            108: ("No History", "overview_neutral"),  # only an unidentified run
         }
         for case_id, (label, style) in expected.items():
             with self.subTest(case_id=case_id):
@@ -62,8 +63,8 @@ class OverviewTests(unittest.TestCase):
 
     def test_insufficient_history_shows_latest_status_with_diagnosis_in_comment(self):
         _, rows = overview()
-        cell = rows[100]["App A Platform Y"]  # a single pass
-        self.assertEqual((cell.value, cell.style), ("Passed", "green"))
+        cell = rows[100]["App A Platform Y"]  # a single pass: the status is kept, the background is grey
+        self.assertEqual((cell.value, cell.style), ("Passed", "overview_neutral"))
         self.assertEqual(
             cell.comment.splitlines(),
             ["Diagnosis: Insufficient History", "Confidence: Low", "Executions: 1", "Pass rate: 100.0%",

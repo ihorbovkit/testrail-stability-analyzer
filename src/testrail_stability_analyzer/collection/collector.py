@@ -37,6 +37,7 @@ from ..api import TestRailClient, TestRailRequestBudgetExceeded
 from ..api.client import MAX_PAGE_LIMIT
 from ..config.settings import Settings
 from ..models import Plan, Result, StatusResolver, Test
+from ..progress import CollectionProgress, ProgressListener, Stage, StageStarted, ignore_progress
 from .case_metadata import CaseMetadataCache
 from .discovery import RunDiscovery, created_after_cutoff
 from .history import Group, build_histories, group_of
@@ -69,10 +70,13 @@ class HistoricalCollector:
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
         plans: Mapping[int, Plan] | None = None,
         case_cache: CaseMetadataCache | None = None,
+        progress: ProgressListener = ignore_progress,
     ) -> None:
         """``plans``: already fetched selected plans (with entries), reused by targeted collection.
 
         ``case_cache``: bulk case metadata shared with later steps (e.g. Feature / Test Group enrichment).
+
+        ``progress``: receives stage, discovery, and per-run collection events (counts and IDs only).
         """
         self._client = client
         self._settings = settings
@@ -80,6 +84,7 @@ class HistoricalCollector:
         self._clock = clock
         self._plans = plans
         self._case_cache = case_cache or CaseMetadataCache(client, settings.testrail.project_id)
+        self._progress = progress
 
     def collect(self) -> CollectionReport:
         now = self._clock()
@@ -87,14 +92,22 @@ class HistoricalCollector:
         window_start = now - timedelta(days=history.window_days)
         lookback_days = history.lookback_limit_days or None  # 0 means no limit, as in configuration
         lookback_start = None if lookback_days is None else now - timedelta(days=lookback_days)
-        discoverer = RunDiscovery(self._client, self._settings)
+        self._progress(StageStarted(Stage.DISCOVERY))
+        discoverer = RunDiscovery(self._client, self._settings, progress=self._progress)
         selection = self._settings.collection
         if selection.targeted:
             discovery = discoverer.discover_selected(selection.plan_ids, selection.run_ids, plans=self._plans)
         else:
             discovery = discoverer.discover(lookback_start)
+        self._progress(StageStarted(Stage.COLLECTION))
         session = _Session(
-            self._client, self._settings, self._resolver, window_start, lookback_start, self._case_cache
+            self._client,
+            self._settings,
+            self._resolver,
+            window_start,
+            lookback_start,
+            self._case_cache,
+            self._progress,
         )
         return session.run(now, discovery)
 
@@ -110,8 +123,10 @@ class _Session:
         window_start: datetime,
         lookback_start: datetime | None,
         case_cache: CaseMetadataCache,
+        progress: ProgressListener,
     ) -> None:
         self.client = client
+        self.progress = progress
         self.case_cache = case_cache
         self.settings = settings
         self.resolver = resolver
@@ -122,6 +137,7 @@ class _Session:
         self.records_fetched = 0
         self.capped_runs: set[int] = set()
         self.skipped_runs: set[int] = set()  # results not fetched because the cap was reached
+        self.unfetched_runs: set[int] = set()  # a fetch skipped (cap or budget); progress reporting only
         self.results: dict[int, list[Result]] = {}
         self.tests: dict[int, list[Test]] = {}
         self.outcomes: list[RunOutcome] = []
@@ -140,15 +156,12 @@ class _Session:
         self.exhausted = discovery.budget_exhausted
         included = sorted(discovery.included, key=_priority)
         early = [run for run in included if self._active_in_window(run)]
-        for run in early:
-            self._fetch_results(run)
-            self._fetch_tests(run)
-        for run in included:
-            if run.run_id not in self.results:
-                self._fetch_results(run)
+        self._each("results and tests of runs active in the window", early, self._fetch_results_and_tests)
+        remaining = [run for run in included if run.run_id not in self.results]
+        self._each("results of the other runs", remaining, self._fetch_results)
         with_results = [run for run in included if run.run_id not in self.tests and self.results.get(run.run_id)]
-        for run in sorted(with_results, key=self._newest_result_order, reverse=True):
-            self._fetch_tests(run)
+        with_results.sort(key=self._newest_result_order, reverse=True)
+        self._each("tests of runs with results", with_results, self._fetch_tests)
 
         # Before coverage is assessed: the bulk case fallback can exhaust the budget.
         applicability = self._applicability_lookup()
@@ -200,6 +213,19 @@ class _Session:
             case_applicability=None if self.case_applicability is None else MappingProxyType(self.case_applicability),
         )
 
+    def _each(self, step: str, runs: list[DiscoveredRun], fetch: Callable[[DiscoveredRun], None]) -> None:
+        self._report(step, 0, len(runs))
+        for done, run in enumerate(runs, 1):
+            fetch(run)
+            self._report(step, done, len(runs))
+
+    def _report(self, step: str, processed: int, total: int) -> None:
+        self.progress(
+            CollectionProgress(
+                step, processed, total, len(self.results), len(self.unfetched_runs), self.records_fetched
+            )
+        )
+
     # -- API calls ---------------------------------------------------------
 
     def _call[T](self, fetch: Callable[[], T]) -> T | None:
@@ -216,6 +242,7 @@ class _Session:
         remaining = None if self.max_results is None else self.max_results - self.records_fetched
         if remaining is not None and remaining <= 0:
             self.skipped_runs.add(run.run_id)  # not fetched, so coverage of this run stays partial
+            self.unfetched_runs.add(run.run_id)
             return
 
         def fetch() -> list[Result]:
@@ -228,6 +255,7 @@ class _Session:
 
         fetched = self._call(fetch)
         if fetched is None:
+            self.unfetched_runs.add(run.run_id)
             return
         self.records_fetched += len(fetched)
         if remaining is not None and len(fetched) >= remaining:
@@ -238,11 +266,16 @@ class _Session:
         self.results[run.run_id] = unique
         self.conflicts.extend(conflicts)
 
+    def _fetch_results_and_tests(self, run: DiscoveredRun) -> None:
+        self._fetch_results(run)
+        self._fetch_tests(run)
+
     def _fetch_tests(self, run: DiscoveredRun) -> None:
         if run.run_id not in self.results or run.run_id in self.tests:
             return
         tests = self._call(lambda: list(self.client.get_tests(run.run_id)))
         if tests is None:
+            self.unfetched_runs.add(run.run_id)
             return
         self.tests[run.run_id] = tests
         by_test: dict[int, list[Result]] = defaultdict(list)

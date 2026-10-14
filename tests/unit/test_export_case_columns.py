@@ -122,7 +122,7 @@ class NotApplicableVersusNoHistoryTests(unittest.TestCase):
         _, by_case = rows(content().overview)
         for platform in ("Platform X", "Platform Y"):
             cell = by_case[100][f"App B {platform}"]
-            self.assertEqual((cell.value, cell.style), ("Not Applicable", "neutral"))
+            self.assertEqual((cell.value, cell.style), ("Not Applicable", "overview_neutral"))
             self.assertIn("applicability value excludes this application", cell.comment)
         self.assertIn("the case applies to this application", by_case[101]["App B Platform X"].comment)
         for case_id in (102, 103, 104, 105, 106):  # unset, unmapped, or unread values never exclude

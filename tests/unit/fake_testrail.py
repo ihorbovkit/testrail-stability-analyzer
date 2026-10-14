@@ -220,5 +220,6 @@ def _matches(item, params):
     return True
 
 
-def make_client(server, settings_obj):
-    return TestRailClient(settings_obj, FakeCredentialProvider(), server, sleep=lambda seconds: None)
+def make_client(server, settings_obj, progress=None):
+    progress = progress or (lambda event: None)
+    return TestRailClient(settings_obj, FakeCredentialProvider(), server, sleep=lambda seconds: None, progress=progress)

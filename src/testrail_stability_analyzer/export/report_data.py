@@ -48,6 +48,24 @@ GREEN: Final = "green"
 YELLOW: Final = "yellow"
 RED: Final = "red"
 NEUTRAL: Final = "neutral"
+# Stability Overview cells: the background shows the historical Pass Rate, the text (dark, neutral font)
+# shows the latest status. Rendered by the XLSX writer only; the XML report has no Overview worksheet.
+OVERVIEW_GREEN: Final = "overview_green"
+OVERVIEW_YELLOW: Final = "overview_yellow"
+OVERVIEW_RED: Final = "overview_red"
+OVERVIEW_NEUTRAL: Final = "overview_neutral"
+# (minimum Pass Rate in percent, style), highest first; below the last threshold the cell is red.
+PASS_RATE_THRESHOLDS: Final = ((90, OVERVIEW_GREEN), (50, OVERVIEW_YELLOW))
+# Grey regardless of the Pass Rate: the history carries no reliable Pass Rate for the combination.
+OVERVIEW_GREY_DIAGNOSES: Final = frozenset(
+    {
+        Diagnosis.NOT_APPLICABLE,
+        Diagnosis.PARTIAL,
+        Diagnosis.UNRESOLVED_APPLICABILITY,
+        Diagnosis.NOT_RUN,
+        Diagnosis.NOT_RUN_IN_WINDOW,
+    }
+)
 
 # Characters allowed by XML 1.0; everything else is removed from cell text.
 _INVALID_XML: Final = re.compile("[^\t\n\r\x20-퟿-�\U00010000-\U0010ffff]")
@@ -90,16 +108,16 @@ DIAGNOSIS_LABELS: Final[Mapping[Diagnosis, tuple[str, str]]] = {
     Diagnosis.UNRESOLVED_APPLICABILITY: ("Applicability Unresolved", NEUTRAL),
 }
 # Overview: diagnoses shown as a state instead of the latest status.
-OVERVIEW_DIAGNOSIS_STATES: Final[Mapping[Diagnosis, tuple[str, str]]] = {
-    Diagnosis.NOT_APPLICABLE: ("Not Applicable", NEUTRAL),
-    Diagnosis.PARTIAL: ("Partial", NEUTRAL),
-    Diagnosis.UNRESOLVED_APPLICABILITY: ("Applicability Unresolved", NEUTRAL),
-    Diagnosis.NOT_RUN: ("Not Run", NEUTRAL),
-    Diagnosis.NOT_RUN_IN_WINDOW: ("Not Run", NEUTRAL),
+OVERVIEW_DIAGNOSIS_STATES: Final[Mapping[Diagnosis, str]] = {
+    Diagnosis.NOT_APPLICABLE: "Not Applicable",
+    Diagnosis.PARTIAL: "Partial",
+    Diagnosis.UNRESOLVED_APPLICABILITY: "Applicability Unresolved",
+    Diagnosis.NOT_RUN: "Not Run",
+    Diagnosis.NOT_RUN_IN_WINDOW: "Not Run",
 }
-OVERVIEW_STATUS_LABELS: Final[Mapping[StatusCategory, tuple[str, str]]] = {
-    **STATUS_LABELS,
-    StatusCategory.NOT_APPLICABLE: ("Not Applicable", NEUTRAL),
+OVERVIEW_STATUS_LABELS: Final[Mapping[StatusCategory, str]] = {
+    **{category: label for category, (label, _) in STATUS_LABELS.items()},
+    StatusCategory.NOT_APPLICABLE: "Not Applicable",
 }
 NO_HISTORY_LABEL: Final = "No History"  # the case was not in any collected run of this combination
 NO_HISTORY_NOTE: Final = "No collected run of this application/platform included the case."
@@ -145,16 +163,29 @@ COMBINATION_METRICS: Final = (
 BLOCKED_REASON_METRIC: Final = ("Blocked Reason", 220)  # added when report.blocked_reason.enabled
 REASON_UNAVAILABLE: Final = "Reason unavailable"
 LEGEND: Final = (
-    ("Green", "Stable: every conclusive execution in the window passed, with enough executions."),
-    ("Yellow", "Inconsistent or automation issue evidence: needs review. Mixed results do not prove flakiness."),
+    (
+        "Green",
+        "Stability Details: Stable (every conclusive execution in the window passed, with enough executions) or a "
+        "latest status of Passed. Stability Overview background: historical Pass Rate of at least 90%.",
+    ),
+    (
+        "Yellow",
+        "Stability Details: Inconsistent or automation issue evidence (needs review; mixed results do not prove "
+        "flakiness) or a latest status of Automation Issue. Stability Overview background: historical Pass Rate "
+        "of at least 50% and below 90%.",
+    ),
     (
         "Red",
-        "Failure evidence: executions in the window ended as failed. This does not confirm an application defect.",
+        "Stability Details: failure evidence (executions in the window ended as failed) or a latest status of "
+        "Failed. This does not confirm an application defect. Stability Overview background: historical Pass "
+        "Rate below 50%.",
     ),
     (
         "Neutral",
-        "No stability conclusion: N/A, Not Run, Insufficient History, Partial, Applicability Unresolved, "
-        "or No History.",
+        "Stability Details: no stability conclusion (N/A, Not Run, Insufficient History, Partial, Applicability "
+        "Unresolved, or No History). Stability Overview background: fewer conclusive executions than the "
+        "configured minimum, no Pass Rate, Partial, Not Applicable, Not Run, Applicability Unresolved, or "
+        "No History.",
     ),
     ("Executions", "Distinct Test Runs in the history window; retries in one run count once. Capped at max runs."),
     (
@@ -182,10 +213,14 @@ LEGEND: Final = (
     ),
     (
         "Overview",
-        "Each cell shows the latest status of the combination (green Passed, red Failed, yellow Automation Issue, "
-        "grey otherwise) or a state: Not Run, Not Applicable, Partial, Applicability Unresolved, No History. "
-        "Green Passed means the latest result passed, not that stability is confirmed; yellow also marks an "
-        "Inconsistent diagnosis. The cell note and Stability Details show the diagnosis.",
+        "Text: the latest execution status of the combination (Passed, Failed, Blocked, Automation Issue, ...) or "
+        "a state (Not Run, Not Applicable, Partial, Applicability Unresolved, No History), in a neutral font. "
+        "Background: the historical Pass Rate (passed / conclusive executions = passed + failed + automation "
+        "issue, distinct runs in the history window), compared exactly without rounding: green at least 90%, "
+        "yellow at least 50% and below 90%, red below 50%. Grey when there are fewer conclusive executions than "
+        "Min conclusive executions, and always for Partial, Not Applicable, Not Run, Applicability Unresolved "
+        "and No History. Neither the latest status nor the diagnosis changes the background, so a Failed cell "
+        "can be green and a Passed cell red. The cell note and Stability Details show the diagnosis.",
     ),
     (
         "Confidence",
@@ -276,7 +311,15 @@ def build_report(
         details_rows.append(
             tuple(case_cells + [cell for a, ap in cells for cell in _combination_cells(a, ap, blocked_reasons=reasons)])
         )
-        overview_rows.append(tuple(case_cells + [overview_cell(a, ap, blocked_reasons=reasons) for a, ap in cells]))
+        overview_rows.append(
+            tuple(
+                case_cells
+                + [
+                    overview_cell(a, ap, min_executions=analysis.min_executions, blocked_reasons=reasons)
+                    for a, ap in cells
+                ]
+            )
+        )
     if case_applicability is None:
         applicability_items = [("Test case applicability", Cell("not configured"))]
     else:
@@ -465,31 +508,56 @@ def overview_cell(
     analysis: KeyAnalysis | None,
     applicability: Applicability = Applicability.NOT_CONFIGURED,
     *,
+    min_executions: int,
     blocked_reasons: bool = False,
 ) -> Cell:
     """The compact Overview value of one combination: its latest status or a meaningful state.
 
-    A known latest status is shown even when history is insufficient; green
-    Passed means the latest result passed, not that stability is confirmed.
-    An inconsistent diagnosis is highlighted yellow while keeping the status.
-    ``applicability`` (of the case to the combination's application) only
-    matters without history: a resolved exclusion shows Not Applicable.
-    With ``blocked_reasons``, the note of a latest Blocked status adds its reason.
+    The text is the latest known status (also when history is insufficient)
+    or a state; the style (background) is the historical Pass Rate band, see
+    :func:`overview_style`. ``applicability`` (of the case to the
+    combination's application) only matters without history: a resolved
+    exclusion shows Not Applicable. With ``blocked_reasons``, the note of a
+    latest Blocked status adds its reason.
     """
     if analysis is None:
         if applicability is Applicability.NOT_APPLICABLE:
-            return Cell("Not Applicable", NEUTRAL, EXCLUDED_NOTE)
+            return Cell("Not Applicable", OVERVIEW_NEUTRAL, EXCLUDED_NOTE)
         extra = NO_HISTORY_APPLICABILITY_NOTES.get(applicability)
-        return Cell(NO_HISTORY_LABEL, NEUTRAL, NO_HISTORY_NOTE if extra is None else f"{NO_HISTORY_NOTE}\n{extra}")
+        note = NO_HISTORY_NOTE if extra is None else f"{NO_HISTORY_NOTE}\n{extra}"
+        return Cell(NO_HISTORY_LABEL, OVERVIEW_NEUTRAL, note)
     m, diagnosis = analysis.metrics, analysis.diagnosis
-    label, style = OVERVIEW_DIAGNOSIS_STATES.get(diagnosis, (None, NEUTRAL))
+    label = OVERVIEW_DIAGNOSIS_STATES.get(diagnosis)
     if label is None and m.latest_category is not None:
-        label, style = OVERVIEW_STATUS_LABELS[m.latest_category]
-        if diagnosis is Diagnosis.INCONSISTENT:
-            style = YELLOW
+        label = OVERVIEW_STATUS_LABELS[m.latest_category]
     elif label is None:
         label = "Insufficient History" if diagnosis is Diagnosis.INSUFFICIENT_HISTORY else STATE_LABELS[analysis.state]
+    style = overview_style(analysis, min_executions)
     return Cell(label, style, _overview_comment(analysis, blocked_reasons=blocked_reasons))
+
+
+def overview_style(analysis: KeyAnalysis, min_executions: int) -> str:
+    """The Overview background: the historical Pass Rate band, or grey without a reliable Pass Rate.
+
+    The Pass Rate is passed / conclusive executions (passed + failed +
+    automation issue) and is compared as an exact fraction, so 9/10 is green
+    and 1/2 is yellow. The latest status and the diagnosis never change the
+    band; only grey states (:data:`OVERVIEW_GREY_DIAGNOSES`, a latest status of
+    Not Applicable, or fewer than ``min_executions`` conclusive executions)
+    replace it.
+    """
+    rate = analysis.metrics.pass_rate
+    if (
+        analysis.diagnosis in OVERVIEW_GREY_DIAGNOSES
+        or analysis.metrics.latest_category is StatusCategory.NOT_APPLICABLE
+        or rate.denominator == 0
+        or rate.denominator < min_executions
+    ):
+        return OVERVIEW_NEUTRAL
+    for percent, style in PASS_RATE_THRESHOLDS:
+        if rate.numerator * 100 >= percent * rate.denominator:
+            return style
+    return OVERVIEW_RED
 
 
 def _overview_comment(analysis: KeyAnalysis, *, blocked_reasons: bool = False) -> str:
@@ -558,7 +626,10 @@ def _info_sheet(
         ("Histories not shown (application or platform excluded by filters)", Cell(filtered)),
         ("Coverage", Cell(_counts(COVERAGE_LABELS[a.coverage] for a in analysis.analyses))),
         ("Diagnoses", Cell(_counts(DIAGNOSIS_LABELS[a.diagnosis][0] for a in analysis.analyses))),
-        ("Overview statuses (shown histories)", Cell(_counts(str(overview_cell(a).value) for a in shown))),
+        (
+            "Overview statuses (shown histories)",
+            Cell(_counts(str(overview_cell(a, min_executions=analysis.min_executions).value) for a in shown)),
+        ),
         ("Defect coverage", Cell(analysis.defect_coverage.value.replace("_", " "))),
         ("Feature / Test Group", Cell(_group_summary(_report_groups(analysis, settings)))),
         *applicability_items,

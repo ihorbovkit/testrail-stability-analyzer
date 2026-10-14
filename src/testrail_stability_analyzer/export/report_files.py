@@ -18,6 +18,13 @@ time); it is then replaced atomically. A file created, replaced, or modified
 by another process during collection is left untouched (the short window
 between that check and the rename is not locked). New files are readable by
 the owner only.
+
+A file this module created is removed again (an unwritten reservation, a
+failed write) only while its descriptor is still open and the path still
+names that same file (device and inode), so a report another process put
+under the same name in the meantime is never deleted. POSIX offers no unlink
+by descriptor; the remaining window between that check and the unlink is
+not locked.
 """
 
 from __future__ import annotations
@@ -65,23 +72,64 @@ class FileIdentity:
         return cls(info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns)
 
 
+@dataclass(slots=True)
+class _Created:
+    """A file created exclusively by this process, with its descriptor still open."""
+
+    fd: int
+    path: Path
+    device: int
+    inode: int
+
+    @classmethod
+    def create(cls, path: Path) -> _Created:
+        fd = _create(path)
+        try:
+            info = os.fstat(fd)
+        except OSError as exc:
+            os.close(fd)
+            raise ReportFileError(f"{path}: {exc.strerror or type(exc).__name__}") from None
+        return cls(fd, path, info.st_dev, info.st_ino)
+
+    def discard(self) -> None:
+        """Close the file and remove it only if the path still names it; never raises.
+
+        Once the descriptor is closed (also by a failed close) ownership can no
+        longer be proven, so the file is left in place.
+        """
+        if self.fd < 0:
+            return
+        try:
+            info = os.lstat(self.path)
+            # The open descriptor keeps the inode allocated, so a match cannot be a reused inode.
+            if (info.st_dev, info.st_ino) == (self.device, self.inode):
+                self.path.unlink()
+        except OSError:
+            pass
+        finally:
+            self.close()
+
+    def close(self) -> None:
+        if self.fd >= 0:
+            fd, self.fd = self.fd, -1
+            os.close(fd)
+
+
 @dataclass(frozen=True, slots=True)
 class ReportTarget:
     label: str  # "XML" or "XLSX"
     path: Path
     extension: str  # ".xml" or ".xlsx", used for automatic names
-    directory_requested: bool = False  # the path was given with a trailing separator
+    # The path names a directory, so the file name is generated. Decided once by parse() and kept
+    # through validation and writing: a directory that disappears is a write error, not a file target.
+    automatic: bool = False
     replaces: FileIdentity | None = None  # the existing file authorized for overwriting, see authorize_overwrite
 
     @classmethod
     def parse(cls, label: str, raw: str, extension: str) -> ReportTarget:
-        """From the command-line text; ``Path`` itself drops a trailing separator."""
-        return cls(label, Path(raw), extension, raw.endswith(_SEPARATORS))
-
-    @property
-    def automatic(self) -> bool:
-        """True when the path names a directory, so the file name is generated."""
-        return self.directory_requested or self.path.is_dir()
+        """From the command-line text: a trailing separator (which ``Path`` drops) or an existing directory."""
+        path = Path(raw)
+        return cls(label, path, extension, raw.endswith(_SEPARATORS) or path.is_dir())
 
 
 def report_scope(
@@ -143,8 +191,9 @@ def write_reports(reports: Sequence[tuple[ReportTarget, bytes]], basename: str) 
     try:
         for target, data in reports:
             if target.automatic:
-                fd, path = reserved.pop(target)
-                _write_new(fd, path, data)
+                created = reserved.pop(target)
+                path = created.path
+                _write_new(created, data)
             else:
                 path = Path(os.path.abspath(target.path))
                 _write_explicit(target, path, data)
@@ -152,28 +201,26 @@ def write_reports(reports: Sequence[tuple[ReportTarget, bytes]], basename: str) 
     except ReportFileError as exc:
         raise ReportFileError(f"could not write the {target.label} report: {exc}", written) from None
     finally:
-        for fd, path in reserved.values():
-            os.close(fd)
-            path.unlink(missing_ok=True)
+        for created in reserved.values():
+            created.discard()
     return written
 
 
-def _reserve(targets: Sequence[ReportTarget], basename: str) -> dict[ReportTarget, tuple[int, Path]]:
+def _reserve(targets: Sequence[ReportTarget], basename: str) -> dict[ReportTarget, _Created]:
     """Exclusively create one empty file per target with the first suffix free for all of them."""
     if not targets:
         return {}
     for number in range(1, MAX_SUFFIX + 1):
         name = basename if number == 1 else f"{basename}-{number}"
-        created: dict[ReportTarget, tuple[int, Path]] = {}
+        created: dict[ReportTarget, _Created] = {}
         try:
             for target in targets:
                 path = Path(os.path.abspath(target.path / f"{name}{target.extension}"))
-                created[target] = (_create(path), path)
+                created[target] = _Created.create(path)
             return created
         except (FileExistsError, ReportFileError) as exc:
-            for fd, path in created.values():
-                os.close(fd)
-                path.unlink(missing_ok=True)
+            for reservation in created.values():
+                reservation.discard()
             if isinstance(exc, ReportFileError):
                 raise
     raise ReportFileError(f"no free file name for {basename} after {MAX_SUFFIX} attempts")
@@ -201,19 +248,22 @@ def _write_explicit(target: ReportTarget, path: Path, data: bytes) -> None:
             raise ReportFileError(f"{path} changed while the collection ran; it was not overwritten")
         # The authorized file was removed meanwhile; creating exclusively keeps any file that appears now.
     try:
-        fd = _create(path)
+        created = _Created.create(path)
     except FileExistsError:  # created after the check before collection
         raise ReportFileError(f"{path} already exists; it was not overwritten") from None
-    _write_new(fd, path, data)
+    _write_new(created, data)
 
 
-def _write_new(fd: int, path: Path, data: bytes) -> None:
+def _write_new(created: _Created, data: bytes) -> None:
+    """Write and close; on failure the file is discarded while its descriptor is still open."""
     try:
-        with os.fdopen(fd, "wb") as file:
-            file.write(data)
+        view = memoryview(data)
+        while view:
+            view = view[os.write(created.fd, view) :]
+        created.close()
     except OSError as exc:
-        path.unlink(missing_ok=True)
-        raise ReportFileError(f"{path}: {exc.strerror or type(exc).__name__}") from None
+        created.discard()
+        raise ReportFileError(f"{created.path}: {exc.strerror or type(exc).__name__}") from None
 
 
 def _write_replace(path: Path, data: bytes) -> None:

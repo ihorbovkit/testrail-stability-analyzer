@@ -96,6 +96,7 @@ class RunDiscovery:
                 self._report(found, plans_fetched)
         except TestRailRequestBudgetExceeded:
             budget_exhausted = True
+            self._report(found, plans_fetched)  # runs added from pages listed before the budget ran out
             limitations.append("request budget exhausted during run discovery; some runs were not discovered")
         if lookback_start is not None:
             limitations.append(
@@ -163,6 +164,7 @@ class RunDiscovery:
             self._report(found, len(known), targets_done=done, targets_total=total)
         except TestRailRequestBudgetExceeded:
             budget_exhausted = True
+            self._report(found, len(known), targets_done=done, targets_total=total)
             limitations.append("request budget exhausted while resolving selected plans and runs")
         if invalid:
             limitations.append(f"{len(invalid)} selected plan/run ID(s) could not be collected")

@@ -1,6 +1,7 @@
 import io
 import threading
 import unittest
+from datetime import timedelta
 
 from testrail_stability_analyzer.api import TestRailClient, TestRailRequestBudgetExceeded, TransportTimeout
 from testrail_stability_analyzer.collection import HistoricalCollector, RunDiscovery
@@ -113,10 +114,10 @@ class ClientEventTests(unittest.TestCase):
 
 
 class DiscoveryAndCollectionEventTests(unittest.TestCase):
-    def collect(self, settings=None):
+    def collect(self, settings=None, server=None):
         events = []
         settings = settings or fx.settings()
-        client = fx.make_client(build_server(), settings, progress=events.append)
+        client = fx.make_client(server or build_server(), settings, progress=events.append)
         collector = HistoricalCollector(client, settings, fx.resolver(), clock=lambda: NOW, progress=events.append)
         return collector.collect(), events, client
 
@@ -142,6 +143,15 @@ class DiscoveryAndCollectionEventTests(unittest.TestCase):
             self.assertLessEqual(event.processed, event.total)
         self.assertEqual(len(of_type(events, RequestStarted)), client.requests_made)
 
+    def test_runs_without_results_are_not_counted_as_runs_with_results(self):
+        server = build_server()
+        server.add_run(fx.run(602, "App-A smoke Plat-Y", created=days_ago(1)), tests=[fx.test(6020, 100, 602)])
+        report, events, _ = self.collect(server=server)
+
+        self.assertIn(602, [run.run_id for run in report.discovery.included])  # scanned, but without results
+        last = of_type(events, CollectionProgress)[-1]
+        self.assertEqual(last.runs_with_results, 3)  # 501, 502, 601; the empty run 602 is not counted
+
     def test_skipped_runs_are_counted_when_the_budget_runs_out(self):
         # statuses are not fetched here; discovery uses 5 requests, leaving 2 for collection.
         report, events, client = self.collect(fx.settings(http={"max_requests_per_execution": 7}))
@@ -151,6 +161,17 @@ class DiscoveryAndCollectionEventTests(unittest.TestCase):
         self.assertGreater(last.runs_skipped, 0)
         self.assertEqual(len(of_type(events, BudgetExhausted)), 1)
         self.assertEqual(len(of_type(events, RequestStarted)), client.requests_made)
+
+    def test_discovery_reports_runs_found_before_the_budget_ran_out(self):
+        # The first standalone-run listing succeeds; the second (open runs before the cutoff) exceeds the budget.
+        settings = fx.settings(http={"max_requests_per_execution": 1})
+        events = []
+        client = fx.make_client(build_server(), settings)
+        result = RunDiscovery(client, settings, progress=events.append).discover(NOW - timedelta(days=30))
+
+        self.assertTrue(result.budget_exhausted)
+        self.assertGreater(len(result.runs), 0)
+        self.assertEqual(of_type(events, DiscoveryProgress)[-1].runs_found, len(result.runs))
 
     def test_targeted_discovery_reports_selection_totals(self):
         events = []

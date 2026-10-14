@@ -138,7 +138,8 @@ class _Session:
         self.capped_runs: set[int] = set()
         self.skipped_runs: set[int] = set()  # results not fetched because the cap was reached
         self.unfetched_runs: set[int] = set()  # a fetch skipped (cap or budget); progress reporting only
-        self.results: dict[int, list[Result]] = {}
+        self.results: dict[int, list[Result]] = {}  # also runs whose fetch returned no results
+        self.runs_with_results = 0  # runs with a nonempty result list; kept as results arrive
         self.tests: dict[int, list[Test]] = {}
         self.outcomes: list[RunOutcome] = []
         self.orphans: list[ResolvedResult] = []
@@ -222,7 +223,7 @@ class _Session:
     def _report(self, step: str, processed: int, total: int) -> None:
         self.progress(
             CollectionProgress(
-                step, processed, total, len(self.results), len(self.unfetched_runs), self.records_fetched
+                step, processed, total, self.runs_with_results, len(self.unfetched_runs), self.records_fetched
             )
         )
 
@@ -263,6 +264,7 @@ class _Session:
             # exactly here, so the run is conservatively treated as capped.
             self.capped_runs.add(run.run_id)
         unique, conflicts = deduplicate(fetched, run.run_id)
+        self.runs_with_results += bool(unique) - bool(self.results.get(run.run_id))
         self.results[run.run_id] = unique
         self.conflicts.extend(conflicts)
 

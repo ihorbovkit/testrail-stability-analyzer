@@ -4,7 +4,9 @@ import tempfile
 import unittest
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
+from testrail_stability_analyzer.export import report_files
 from testrail_stability_analyzer.export.report_files import (
     ReportFileError,
     ReportTarget,
@@ -62,6 +64,19 @@ class TargetTests(FileTestCase):
         self.assertTrue(ReportTarget.parse("XML", str(self.dir), ".xml").automatic)  # existing directory
         self.assertTrue(ReportTarget.parse("XML", f"{self.dir}/new/", ".xml").automatic)  # trailing separator
         self.assertFalse(ReportTarget.parse("XML", str(self.dir / "r.xml"), ".xml").automatic)
+
+    def test_directory_decision_survives_the_directory_disappearing(self):
+        directory = self.dir / "reports"
+        directory.mkdir()
+        target = ReportTarget.parse("XML", str(directory), ".xml")  # existing directory, no trailing separator
+        self.assertIsNone(target_problem(target, overwrite=True))
+        directory.rmdir()  # removed during collection
+
+        self.assertTrue(target.automatic)
+        self.assertIn("does not exist", target_problem(target, overwrite=True))
+        with self.assertRaises(ReportFileError):
+            write_reports([(target, b"x")], BASE)
+        self.assertFalse(directory.exists())  # no report file at the directory's former path
 
     def test_problems(self):
         existing = self.dir / "r.xml"
@@ -195,6 +210,70 @@ class WriteTests(FileTestCase):
         self.assertIn("could not write the XLSX report", str(ctx.exception))
         self.assertEqual(sorted(p.name for p in (self.dir / "auto").iterdir()), [])  # reservation removed
         self.assertEqual((self.dir / "fresh.xml").read_bytes(), b"1")
+
+
+class OwnedCleanupTests(FileTestCase):
+    """Cleanup removes only files this process still owns; synthetic paths only."""
+
+    @staticmethod
+    def take_over(path):
+        """Another process removes the file and puts its own report under the same name."""
+        path.unlink()
+        path.write_text("other report")
+
+    def test_collision_cleanup_keeps_a_recreated_earlier_reservation(self):
+        xlsx_dir, xml_dir = self.dir / "x", self.dir / "m"
+        xlsx_dir.mkdir()
+        xml_dir.mkdir()
+        (xml_dir / f"{BASE}.xml").write_text("taken")  # the later file collides
+        original = report_files._Created.create
+
+        def create(path):
+            created = original(path)
+            if path.name == f"{BASE}.xlsx":
+                self.take_over(path)
+            return created
+
+        targets = [ReportTarget.parse("XLSX", f"{xlsx_dir}/", ".xlsx"), ReportTarget.parse("XML", f"{xml_dir}/", ".xml")]
+        with mock.patch.object(report_files._Created, "create", side_effect=create):
+            written = write_reports([(target, b"r") for target in targets], BASE)
+
+        self.assertEqual((xlsx_dir / f"{BASE}.xlsx").read_text(), "other report")
+        self.assertEqual([path.name for _, path in written], [f"{BASE}-2.xlsx", f"{BASE}-2.xml"])
+
+    def test_unwritten_reservation_is_kept_when_recreated_by_another_process(self):
+        (self.dir / "taken.xml").write_text("old")
+        explicit = ReportTarget.parse("XML", str(self.dir / "taken.xml"), ".xml")
+        original = report_files._reserve
+
+        def reserve(targets, basename):
+            reserved = original(targets, basename)
+            for created in reserved.values():
+                self.take_over(created.path)
+            return reserved
+
+        with mock.patch.object(report_files, "_reserve", side_effect=reserve):
+            with self.assertRaises(ReportFileError):
+                write_reports([(explicit, b"x"), (self.auto(), b"y")], BASE)
+
+        self.assertEqual((self.dir / f"{BASE}.xlsx").read_text(), "other report")
+
+    def test_failed_write_removes_only_its_own_file(self):
+        path = self.dir / "mine.xml"
+        target = ReportTarget.parse("XML", str(path), ".xml")
+        with mock.patch.object(report_files.os, "write", side_effect=OSError(28, "No space left on device")):
+            with self.assertRaises(ReportFileError):
+                write_reports([(target, b"x")], BASE)
+        self.assertFalse(path.exists())
+
+        def write(fd, data):
+            self.take_over(path)
+            raise OSError(28, "No space left on device")
+
+        with mock.patch.object(report_files.os, "write", side_effect=write):
+            with self.assertRaises(ReportFileError):
+                write_reports([(target, b"x")], BASE)
+        self.assertEqual(path.read_text(), "other report")
 
 
 if __name__ == "__main__":

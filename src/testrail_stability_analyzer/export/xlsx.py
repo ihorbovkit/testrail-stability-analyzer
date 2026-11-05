@@ -1,7 +1,8 @@
 """Native XLSX stability report (Excel, Google Sheets), written with the optional ``openpyxl`` package.
 
-Worksheets, in order: ``Stability Overview`` (one compact status cell per
-application/platform, with a short note), ``Stability Details`` (every metric,
+Worksheets, in order: ``Stability Overview`` (a two-row header; per
+application/platform a Latest Status and a numeric Pass Rate column, with
+short notes), ``Stability Details`` (every metric,
 as numeric percentage and date cells), and ``Report Info``. The content is the
 same as the XML report's (see :mod:`.report_data`).
 
@@ -90,8 +91,9 @@ def render_xlsx(
     workbook = Workbook()
     workbook.remove(workbook.active)
     styles = _Styles()
-    for sheet, frozen in ((content.overview, "B2"), (content.details, "B2"), (content.info, "A2")):
-        _write_sheet(workbook.create_sheet(sheet.name), sheet, styles, frozen)
+    # Frozen columns: Test Case ID on the stability worksheets; frozen rows: every header row.
+    for sheet, frozen_column in ((content.overview, "B"), (content.details, "B"), (content.info, "A")):
+        _write_sheet(workbook.create_sheet(sheet.name), sheet, styles, frozen_column)
     collected = collection.collected_at.astimezone(UTC).replace(tzinfo=None)
     workbook.properties.creator = AUTHOR
     workbook.properties.created = collected
@@ -109,37 +111,63 @@ class _Styles:
 
         self.top = Alignment(vertical="top")
         self.wrapped = Alignment(vertical="top", wrap_text=True)
+        self.group = Alignment(horizontal="center", vertical="center", wrap_text=True)
         self.header_font = Font(bold=True)
         self.header_fill = PatternFill("solid", fgColor=_HEADER_FILL)
         self.fonts = {style: Font(color=font) for style, (font, _) in _COLOURS.items()}
         self.fills = {style: PatternFill("solid", fgColor=fill) for style, (_, fill) in _COLOURS.items()}
 
 
-def _write_sheet(ws: Any, sheet: Worksheet, styles: _Styles, frozen: str) -> None:
+def _write_sheet(ws: Any, sheet: Worksheet, styles: _Styles, frozen_column: str) -> None:
+    """Write headers, rows, notes, the freeze, and the AutoFilter (on the last header row).
+
+    With ``header_groups``, row 1 holds the group labels, merged horizontally
+    over their columns; spans without a label stay blank and grey. Nothing is
+    merged vertically and every merge lies above the filter row, so Google
+    Sheets keeps the filter and can sort the data.
+    """
     from openpyxl.comments import Comment
     from openpyxl.utils import get_column_letter
 
+    header_row = 2 if sheet.header_groups else 1
+    if sheet.header_groups:
+        _write_header_groups(ws, sheet.header_groups, styles)
     wrapped = {index for index, (header, _) in enumerate(sheet.columns, start=1) if header in sheet.wrap}
     for index, (header, width) in enumerate(sheet.columns, start=1):
         ws.column_dimensions[get_column_letter(index)].width = round(width / _POINTS_PER_CHARACTER, 1)
-        cell = ws.cell(row=1, column=index)
+        cell = ws.cell(row=header_row, column=index)
         _set_text(cell, header)
         cell.font, cell.fill, cell.alignment = styles.header_font, styles.header_fill, styles.wrapped
-    for row_index, row in enumerate(sheet.rows, start=2):
+    for row_index, row in enumerate(sheet.rows, start=header_row + 1):
         for column_index, value in enumerate(row, start=1):
             cell = ws.cell(row=row_index, column=column_index)
             _set_value(cell, value)
             cell.alignment = styles.wrapped if column_index in wrapped else styles.top
-            if value.style in _NUMBER_FORMATS:
-                cell.number_format = _NUMBER_FORMATS[value.style]
-            elif value.style in styles.fills:
+            number_format = value.number_format or value.style
+            if number_format in _NUMBER_FORMATS:
+                cell.number_format = _NUMBER_FORMATS[number_format]
+            if value.style in styles.fills:
                 cell.font, cell.fill = styles.fonts[value.style], styles.fills[value.style]
             if value.comment:
                 comment = Comment(safe_text(value.comment), AUTHOR)
                 comment.width, comment.height = 260, 130
                 cell.comment = comment
-    ws.freeze_panes = frozen
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(sheet.columns))}{len(sheet.rows) + 1}"
+    ws.freeze_panes = f"{frozen_column}{header_row + 1}"
+    last = get_column_letter(len(sheet.columns))
+    ws.auto_filter.ref = f"A{header_row}:{last}{header_row + len(sheet.rows)}"
+
+
+def _write_header_groups(ws: Any, groups: Sequence[tuple[str | None, int]], styles: _Styles) -> None:
+    start = 1
+    for label, span in groups:
+        for column in range(start, start + span):  # styled before merging: merged cells keep the anchor's look
+            cell = ws.cell(row=1, column=column)
+            cell.font, cell.fill, cell.alignment = styles.header_font, styles.header_fill, styles.group
+        if label is not None:
+            _set_text(ws.cell(row=1, column=start), label)
+            if span > 1:
+                ws.merge_cells(start_row=1, start_column=start, end_row=1, end_column=start + span - 1)
+        start += span
 
 
 def _set_value(cell: Any, value: Cell) -> None:

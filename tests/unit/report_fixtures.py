@@ -66,3 +66,48 @@ def sample_inputs(*, applicability=Applicability.NOT_CONFIGURED):
         outcomes, hist=hist, case_groups=sample_groups(), limitations=("synthetic collection limitation",)
     )
     return collection, analyze(collection, settings), settings
+
+
+def headers(sheet):
+    """Column names of a content worksheet; under a header group they are qualified as '<group>: <header>'."""
+    if not sheet.header_groups:
+        return [name for name, _ in sheet.columns]
+    names, columns = [], iter(sheet.columns)
+    for label, span in sheet.header_groups:
+        for _ in range(span):
+            header, _ = next(columns)
+            names.append(header if label is None else f"{label}: {header}")
+    return names
+
+
+def rows_by_case(sheet):
+    """(headers, {case ID: {header: cell}}) of a content worksheet, keyed as :func:`headers`."""
+    names = headers(sheet)
+    return names, {row[0].value: dict(zip(names, row, strict=True)) for row in sheet.rows}
+
+
+def xlsx_headers(ws):
+    """(header row, column names) of an openpyxl worksheet, qualified as :func:`headers` below a merged group.
+
+    The header row is the last frozen row; a group label is read from row 1 (its merge anchor).
+    """
+    header_row = int("".join(ch for ch in ws.freeze_panes if ch.isdigit())) - 1
+    if header_row == 1:
+        return 1, [cell.value for cell in ws[1]]
+    group_of = {}
+    for column in range(1, ws.max_column + 1):
+        group_of[column] = ws.cell(1, column).value
+    for merged in ws.merged_cells.ranges:
+        for column in range(merged.min_col, merged.max_col + 1):
+            group_of[column] = ws.cell(1, merged.min_col).value
+    names = []
+    for column in range(1, ws.max_column + 1):
+        header = ws.cell(header_row, column).value
+        names.append(header if group_of[column] is None else f"{group_of[column]}: {header}")
+    return header_row, names
+
+
+def xlsx_rows_by_case(ws):
+    """(column names, {case ID: {name: cell}}) of an openpyxl worksheet, keyed as :func:`xlsx_headers`."""
+    header_row, names = xlsx_headers(ws)
+    return names, {row[0].value: dict(zip(names, row, strict=True)) for row in ws.iter_rows(min_row=header_row + 1)}

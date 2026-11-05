@@ -589,13 +589,17 @@ class XlsxReportCommandTests(CliTestCase):
         self.assertEqual(workbook.sheetnames, ["Stability Overview", "Stability Details", "Report Info"])
         overview = workbook["Stability Overview"]
         self.assertEqual(
-            [cell.value for cell in overview[1]],
+            [cell.value for cell in overview[1]], [None] * 5 + ["App A Platform X", None, "App A Platform Y", None]
+        )  # merged combination headers over each Latest Status / Pass Rate pair
+        self.assertEqual(
+            [cell.value for cell in overview[2]],
             ["Test Case ID", "Test Case Title", "Feature / Test Group", "Test Type", "Defects",
-             "App A Platform X", "App A Platform Y"],
+             "Latest Status", "Pass Rate", "Latest Status", "Pass Rate"],
         )  # fmt: skip
-        self.assertEqual(overview["B2"].value, "Case 100")  # the title from get_tests
-        self.assertEqual(overview["C2"].value, "Area One/Feature")
-        self.assertEqual(overview["F2"].value, "Automation Issue")
+        self.assertEqual(overview["B3"].value, "Case 100")  # the title from get_tests
+        self.assertEqual(overview["C3"].value, "Area One/Feature")
+        self.assertEqual(overview["F3"].value, "Automation Issue")
+        self.assertEqual(overview["G3"].number_format, "0.0%")
         texts = " ".join(str(c.value) for ws in workbook.worksheets for row in ws.iter_rows() for c in row)
         for sensitive in (SENSITIVE_COMMENT, "abc123", "Synthetic triage note", PLAN_NAME, RUN_NAME, FAKE_KEY):
             self.assertNotIn(sensitive, texts)

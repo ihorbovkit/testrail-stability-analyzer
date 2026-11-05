@@ -705,9 +705,25 @@ Both have frozen header rows, AutoFilter, set column widths, numeric
 percentage and date cells (UTC), and the colours below.
 
 **`Stability Overview`** (XLSX only, first worksheet): one row per Test Case
-ID with the case columns below and **one compact column per application ×
-platform** combination (header `<application> <platform>`). Each cell shows
-the latest status of that combination, or a state:
+ID with the case columns below and **two columns per application × platform**
+combination, under a two-row header:
+
+```text
+Row 1:  (blank, grey)  ...            | App A Platform X          | App A Platform Y          | ...
+Row 2:  Test Case ID | Test Case Title | ... | Latest Status | Pass Rate | Latest Status | Pass Rate | ...
+Row 3+: one row per Test Case ID
+```
+
+- Row 1 holds the combination name, merged horizontally over its Latest
+  Status and Pass Rate columns. The case columns have their headers in row 2
+  and blank grey cells above them; nothing is merged vertically.
+- The AutoFilter starts at row 2 and covers every data row, so each Latest
+  Status and Pass Rate column can be filtered and sorted. All merged cells
+  lie above the filter row, which keeps filtering and sorting working in
+  Google Sheets (it rejects filters over vertically merged cells).
+- Rows 1–2 and the Test Case ID column are frozen (`B3`).
+
+**Latest Status** shows the latest status of the combination, or a state:
 
 | Cell | When |
 |---|---|
@@ -719,8 +735,8 @@ the latest status of that combination, or a state:
 | Passed, Failed, Blocked, Automation Issue, Retest, Unknown Status | otherwise: the latest known status, also when history is insufficient |
 
 The **text** is the latest execution status (or state above), in one dark,
-neutral font. The **background** is the historical **Pass Rate** of the
-combination: passed / conclusive executions (passed + failed + automation
+neutral font. The **background** of both the Latest Status and the Pass Rate
+cell is the historical **Pass Rate** of the combination: passed / conclusive executions (passed + failed + automation
 issue, one per distinct run in the history window), compared as an exact
 fraction without rounding:
 
@@ -734,12 +750,22 @@ fraction without rounding:
 Neither the latest status nor the diagnosis changes the background: a
 `Failed` cell with a 95% Pass Rate is green, a `Passed` cell with 20% is red,
 and an `Inconsistent` history with 95% is green. Blocked, retest, not run,
-and unknown executions do not count as conclusive. The cell's note shows the
-diagnosis, confidence, executions, pass rate, coverage, and latest result
-date, and, for a latest status of Blocked, `Blocked reason: <reason>` (see
-[Blocked reason](#blocked-reason)). The XML report has no Overview worksheet,
-so this colouring is XLSX-only; Stability Details keep the colours below in
-both formats.
+and unknown executions do not count as conclusive. The Latest Status note
+shows the diagnosis, confidence, executions, pass rate, coverage, and latest
+result date, and, for a latest status of Blocked, `Blocked reason: <reason>`
+(see [Blocked reason](#blocked-reason)).
+
+**Pass Rate** is a numeric cell formatted as `0.0%` (e.g. `88.9%`), so it
+sorts and filters as a number. It has the same background as the Latest
+Status cell next to it. It shows the calculated Pass Rate also when there are
+fewer conclusive executions than `analysis.min_executions` (then on grey), and
+for Partial histories; it is blank when there is no conclusive execution or
+no history. Its note shows the fraction (`8 of 9 conclusive executions
+passed`), executions, diagnosis, confidence, coverage, and, on grey because of
+too few conclusive executions, the minimum.
+
+The XML report has no Overview worksheet, so this colouring is XLSX-only;
+Stability Details keep the colours below in both formats.
 
 **`Stability Details`** (the XML `Stability` worksheet): one row per Test Case
 ID, sorted by ID.
@@ -1222,7 +1248,8 @@ tests/integration/   reserved for opt-in live tests
 - Unique, timestamped report file names for directory outputs, exclusive
   file creation, and explicit `--overwrite-report`.
 - Native XLSX report (`--xlsx-report`, optional `openpyxl`) with a compact
-  Stability Overview, Stability Details, and Report Info.
+  Stability Overview (Latest Status and Pass Rate per application/platform,
+  two-row header), Stability Details, and Report Info.
 - Excel-compatible XML Spreadsheet 2003 report (`--xml-report`) with dynamic
   application/platform columns, colour coding, report-level coverage and
   limitations, and formula-injection protection.
@@ -1296,6 +1323,9 @@ tests/integration/   reserved for opt-in live tests
 - A defect ID that starts with `=`, `+`, `-`, or `@` and is the first in its
   cell is shown with a leading `'` (formula-injection protection).
 - XLSX column widths are approximations of the shared point widths.
+- The Overview's merged row-1 headers are not part of the filter range: a
+  sort or filter applies to the data rows below row 2 only, and copying a
+  single column of the Overview does not include its combination name.
 - Blocked reasons are recognized only in sections whose header starts a line;
   redaction is pattern-based and best-effort, so an unusual secret format
   inside a reason section could remain. Reports must not be shared outside

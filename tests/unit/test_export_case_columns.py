@@ -13,6 +13,7 @@ from . import analysis_fixtures as af
 from . import fake_testrail as fx
 from .analysis_fixtures import PLAT_X, PLAT_Y, outcome, rec
 from .fake_testrail import PASSED
+from .report_fixtures import rows_by_case, xlsx_rows_by_case
 from .test_export_spreadsheet import table
 
 try:
@@ -63,8 +64,7 @@ def content(collected=None, config=None):
 
 
 def rows(sheet):
-    headers = [name for name, _ in sheet.columns]
-    return headers, {row[0].value: dict(zip(headers, row, strict=True)) for row in sheet.rows}
+    return rows_by_case(sheet)
 
 
 def info(report):
@@ -121,19 +121,19 @@ class NotApplicableVersusNoHistoryTests(unittest.TestCase):
     def test_overview_distinguishes_exclusion_from_missing_history(self):
         _, by_case = rows(content().overview)
         for platform in ("Platform X", "Platform Y"):
-            cell = by_case[100][f"App B {platform}"]
+            cell = by_case[100][f"App B {platform}: Latest Status"]
             self.assertEqual((cell.value, cell.style), ("Not Applicable", "overview_neutral"))
             self.assertIn("applicability value excludes this application", cell.comment)
-        self.assertIn("the case applies to this application", by_case[101]["App B Platform X"].comment)
+        self.assertIn("the case applies to this application", by_case[101]["App B Platform X: Latest Status"].comment)
         for case_id in (102, 103, 104, 105, 106):  # unset, unmapped, or unread values never exclude
             with self.subTest(case_id=case_id):
-                self.assertEqual(by_case[case_id]["App B Platform X"].value, "No History")
+                self.assertEqual(by_case[case_id]["App B Platform X: Latest Status"].value, "No History")
 
     def test_unresolved_values_are_explained_in_the_note(self):
         _, by_case = rows(content().overview)
         for case_id in (102, 103, 105, 106):
             with self.subTest(case_id=case_id):
-                note = by_case[case_id]["App B Platform X"].comment
+                note = by_case[case_id]["App B Platform X: Latest Status"].comment
                 self.assertEqual(
                     note.splitlines(),
                     ["No collected run of this application/platform included the case.",
@@ -142,8 +142,9 @@ class NotApplicableVersusNoHistoryTests(unittest.TestCase):
 
     def test_an_actual_result_takes_precedence(self):
         _, by_case = rows(content().overview)
-        self.assertEqual(by_case[107]["App A Platform X"].value, "Passed")  # executed despite the exclusion
-        self.assertEqual(by_case[107]["App B Platform X"].value, "No History")  # applies, never executed
+        # Executed despite the exclusion; App B applies but was never executed.
+        self.assertEqual(by_case[107]["App A Platform X: Latest Status"].value, "Passed")
+        self.assertEqual(by_case[107]["App B Platform X: Latest Status"].value, "No History")
 
     def test_details_show_na_for_an_excluded_combination(self):
         _, by_case = rows(content().details)
@@ -156,7 +157,7 @@ class NotApplicableVersusNoHistoryTests(unittest.TestCase):
 
     def test_without_configuration_missing_history_stays_no_history(self):
         _, by_case = rows(content(collection(case_applicability=None), fx.settings()).overview)
-        cell = by_case[100]["App B Platform X"]
+        cell = by_case[100]["App B Platform X: Latest Status"]
         self.assertEqual(cell.value, "No History")
         self.assertEqual(cell.comment, "No collected run of this application/platform included the case.")
 
@@ -231,20 +232,19 @@ class WorkbookTests(unittest.TestCase):
         workbook = openpyxl.load_workbook(io.BytesIO(render_xlsx(collected, analyze(collected, config), config)))
         for name in ("Stability Overview", "Stability Details"):
             ws = workbook[name]
-            headers = [cell.value for cell in ws[1]]
+            headers, by_case = xlsx_rows_by_case(ws)
             with self.subTest(sheet=name):
                 self.assertEqual(headers[:2], ["Test Case ID", "Test Case Title"])
                 self.assertIn("Applicability", headers)
-                title = ws.cell(2, 2)
+                title = by_case[100]["Test Case Title"]
                 self.assertEqual((title.value, title.data_type), ("'" + HOSTILE_TITLE, "s"))
                 self.assertTrue(title.alignment.wrap_text)
-        ws = workbook["Stability Overview"]
-        headers = [cell.value for cell in ws[1]]
-        row = dict(zip(headers, ws[2], strict=True))
+        _, by_case = xlsx_rows_by_case(workbook["Stability Overview"])
+        row = by_case[100]
         self.assertEqual(row["Applicability"].value, "App A")
-        self.assertEqual(row["App B Platform X"].value, "Not Applicable")
-        self.assertIn("applicability value excludes", row["App B Platform X"].comment.text)
-        self.assertEqual([row[c].value for c in COMBINATIONS[:2]], ["Passed", "Not Run"])
+        self.assertEqual(row["App B Platform X: Latest Status"].value, "Not Applicable")
+        self.assertIn("applicability value excludes", row["App B Platform X: Latest Status"].comment.text)
+        self.assertEqual([row[f"{c}: Latest Status"].value for c in COMBINATIONS[:2]], ["Passed", "Not Run"])
 
 
 if __name__ == "__main__":

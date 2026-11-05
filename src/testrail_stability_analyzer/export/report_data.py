@@ -4,8 +4,8 @@
 of typed cells:
 
 - Overview: one row per test case ID with the shared case columns (Test Case
-  ID and Test Case Title first) and one compact status cell per configured
-  application/platform combination.
+  ID and Test Case Title first) and, per configured application/platform
+  combination, a Latest Status and a Pass Rate cell under a grouped header.
 - Details: the same rows with every metric of each combination (latest status,
   latest result date, executions, rates, diagnosis, confidence, coverage).
 - Info: collection scope, coverage, summaries, limitations, and a legend.
@@ -161,6 +161,8 @@ COMBINATION_METRICS: Final = (
     ("Coverage", 105),
 )
 BLOCKED_REASON_METRIC: Final = ("Blocked Reason", 220)  # added when report.blocked_reason.enabled
+# Overview columns per combination, below a merged "<application> <platform>" header.
+OVERVIEW_METRICS: Final = (("Latest Status", 110), ("Pass Rate", 70))
 REASON_UNAVAILABLE: Final = "Reason unavailable"
 LEGEND: Final = (
     (
@@ -213,14 +215,16 @@ LEGEND: Final = (
     ),
     (
         "Overview",
-        "Text: the latest execution status of the combination (Passed, Failed, Blocked, Automation Issue, ...) or "
-        "a state (Not Run, Not Applicable, Partial, Applicability Unresolved, No History), in a neutral font. "
-        "Background: the historical Pass Rate (passed / conclusive executions = passed + failed + automation "
-        "issue, distinct runs in the history window), compared exactly without rounding: green at least 90%, "
-        "yellow at least 50% and below 90%, red below 50%. Grey when there are fewer conclusive executions than "
-        "Min conclusive executions, and always for Partial, Not Applicable, Not Run, Applicability Unresolved "
-        "and No History. Neither the latest status nor the diagnosis changes the background, so a Failed cell "
-        "can be green and a Passed cell red. The cell note and Stability Details show the diagnosis.",
+        "Two columns per application/platform (XLSX only). Latest Status: the latest execution status of the "
+        "combination (Passed, Failed, Blocked, Automation Issue, ...) or a state (Not Run, Not Applicable, "
+        "Partial, Applicability Unresolved, No History), in a neutral font. Pass Rate: the historical Pass Rate "
+        "as a number (passed / conclusive executions = passed + failed + automation issue, distinct runs in the "
+        "history window); blank without conclusive executions. Both cells share one background, the Pass Rate "
+        "compared exactly without rounding: green at least 90%, yellow at least 50% and below 90%, red below "
+        "50%. Grey when there are fewer conclusive executions than Min conclusive executions (the Pass Rate is "
+        "still shown), and always for Partial, Not Applicable, Not Run, Applicability Unresolved and No History. "
+        "Neither the latest status nor the diagnosis changes the background, so a Failed cell can be green and "
+        "a Passed cell red. The cell notes and Stability Details show the diagnosis.",
     ),
     (
         "Confidence",
@@ -236,6 +240,7 @@ class Cell:
     value: str | int | float | datetime | None
     style: str | None = None
     comment: str | None = None  # short note built from analyzed values only; XLSX writes it, XML ignores it
+    number_format: str | None = None  # "percent" or "datetime" for a cell whose style is a colour (XLSX only)
 
 
 @dataclass(frozen=True, slots=True)
@@ -244,6 +249,9 @@ class Worksheet:
     columns: tuple[tuple[str, int], ...]  # (header, width in points)
     rows: tuple[tuple[Cell, ...], ...]
     wrap: frozenset[str] = frozenset()  # headers of columns with long text (wrapped by the XLSX writer)
+    # Optional header row above ``columns``: (label, column span) from the first column; ``None`` leaves the
+    # span blank. The spans cover every column. Only the XLSX Overview uses it.
+    header_groups: tuple[tuple[str | None, int], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,9 +297,11 @@ def build_report(
 
     details_columns = list(case_columns)
     overview_columns = list(case_columns)
+    overview_groups: list[tuple[str | None, int]] = [(None, len(case_columns))]
     for application, platform in pairs:
         details_columns += [(f"{application} | {platform}: {metric}", width) for metric, width in metrics]
-        overview_columns.append((f"{application} {platform}", 110))
+        overview_columns += OVERVIEW_METRICS
+        overview_groups.append((f"{application} {platform}", len(OVERVIEW_METRICS)))
     wrap = frozenset(
         {"Test Case Title", "Feature / Test Group", "Class Name", "Defects"}
         | {header for header, _ in details_columns if header.endswith(f": {BLOCKED_REASON_METRIC[0]}")}
@@ -315,8 +325,12 @@ def build_report(
             tuple(
                 case_cells
                 + [
-                    overview_cell(a, ap, min_executions=analysis.min_executions, blocked_reasons=reasons)
+                    cell
                     for a, ap in cells
+                    for cell in (
+                        overview_cell(a, ap, min_executions=analysis.min_executions, blocked_reasons=reasons),
+                        overview_pass_rate_cell(a, min_executions=analysis.min_executions),
+                    )
                 ]
             )
         )
@@ -335,7 +349,9 @@ def build_report(
     reason_summary = f"{len(blocked) - unavailable} extracted, {unavailable} unavailable" if reasons else "disabled"
     items = [*applicability_items, ("Blocked reasons (latest status Blocked, shown histories)", Cell(reason_summary))]
     return ReportContent(
-        overview=Worksheet("Stability Overview", tuple(overview_columns), tuple(overview_rows), wrap),
+        overview=Worksheet(
+            "Stability Overview", tuple(overview_columns), tuple(overview_rows), wrap, tuple(overview_groups)
+        ),
         details=Worksheet("Stability Details", tuple(details_columns), tuple(details_rows), wrap),
         info=_info_sheet(collection, analysis, settings, [*notes, *case_notes], items),
     )
@@ -559,6 +575,42 @@ def overview_style(analysis: KeyAnalysis, min_executions: int) -> str:
         if rate.numerator * 100 >= percent * rate.denominator:
             return style
     return OVERVIEW_RED
+
+
+def overview_pass_rate_cell(analysis: KeyAnalysis | None, *, min_executions: int = DEFAULT_MIN_EXECUTIONS) -> Cell:
+    """The Overview Pass Rate of one combination: a numeric fraction (formatted as a percentage) or empty.
+
+    The value is the historical Pass Rate even when it is too thin for a
+    colour band; the background is the same as the Latest Status cell's
+    (:func:`overview_style`). Without history or conclusive executions the
+    cell is empty and grey.
+    """
+    if analysis is None:
+        return Cell(None, OVERVIEW_NEUTRAL, number_format="percent")
+    return Cell(
+        analysis.metrics.pass_rate.value,
+        overview_style(analysis, min_executions),
+        _pass_rate_comment(analysis, min_executions),
+        "percent",
+    )
+
+
+def _pass_rate_comment(analysis: KeyAnalysis, min_executions: int) -> str:
+    m = analysis.metrics
+    rate = m.pass_rate
+    if rate.denominator == 0:
+        lines = ["Pass rate: n/a (no conclusive executions in the window)"]
+    else:
+        lines = [f"Pass rate: {rate.value:.1%} ({rate.numerator} of {rate.denominator} conclusive executions passed)"]
+    lines += [
+        f"Executions: {m.executions}",
+        f"Diagnosis: {DIAGNOSIS_LABELS[analysis.diagnosis][0]}",
+        f"Confidence: {CONFIDENCE_LABELS[analysis.confidence]}",
+        f"Coverage: {COVERAGE_LABELS[analysis.coverage]}",
+    ]
+    if 0 < rate.denominator < min_executions:
+        lines.append(f"Grey: fewer than {min_executions} conclusive executions")
+    return "\n".join(lines)
 
 
 def _overview_comment(analysis: KeyAnalysis, *, blocked_reasons: bool = False) -> str:

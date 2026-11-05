@@ -22,6 +22,7 @@ from testrail_stability_analyzer.export.report_data import (
 from . import analysis_fixtures as af
 from . import fake_testrail as fx
 from .fake_testrail import AUTOMATION_ISSUE, BLOCKED, FAILED, NOT_APPLICABLE, PASSED
+from .report_fixtures import rows_by_case, xlsx_rows_by_case
 
 try:
     import openpyxl
@@ -30,7 +31,8 @@ try:
 except ImportError:  # pragma: no cover - exercised only without the optional dependency
     openpyxl = None
 
-COLUMN = "App A Platform X"
+COLUMN = "App A Platform X: Latest Status"
+RATE_COLUMN = "App A Platform X: Pass Rate"
 MAX_RUNS = 30
 
 
@@ -48,12 +50,16 @@ def inputs(statuses, *, min_executions=5, complete=True):
     return collection, analyze(collection, config), config
 
 
-def overview(statuses, **kwargs):
+def overview_row(statuses, **kwargs):
     collection, analysis, config = inputs(statuses, **kwargs)
-    sheet = build_report(collection, analysis, config).overview
-    headers = [name for name, _ in sheet.columns]
-    (row,) = sheet.rows
-    return dict(zip(headers, row, strict=True))[COLUMN], analysis.analyses[0]
+    _, rows = rows_by_case(build_report(collection, analysis, config).overview)
+    (row,) = rows.values()
+    return row, analysis.analyses[0]
+
+
+def overview(statuses, **kwargs):
+    row, analysis = overview_row(statuses, **kwargs)
+    return row[COLUMN], analysis
 
 
 class ThresholdTests(unittest.TestCase):
@@ -94,8 +100,11 @@ class ThresholdTests(unittest.TestCase):
 
 class OverviewColourTests(unittest.TestCase):
     def assertCell(self, statuses, text, style, **kwargs):
-        cell, analysis = overview(statuses, **kwargs)
+        row, analysis = overview_row(statuses, **kwargs)
+        cell = row[COLUMN]
         self.assertEqual((cell.value, cell.style), (text, style))
+        self.assertEqual(row[RATE_COLUMN].style, style)  # the pair shares the Pass Rate background
+        self.assertEqual(row[RATE_COLUMN].value, analysis.metrics.pass_rate.value)
         return cell, analysis
 
     def test_exactly_ninety_percent_is_green(self):
@@ -103,6 +112,9 @@ class OverviewColourTests(unittest.TestCase):
 
     def test_just_below_ninety_percent_is_yellow(self):
         self.assertCell([PASSED] * 8 + [FAILED], "Passed", OVERVIEW_YELLOW)  # 8/9 = 88.9%
+        row, _ = overview_row([PASSED] * 8 + [FAILED])
+        self.assertAlmostEqual(row[RATE_COLUMN].value, 8 / 9)
+        self.assertTrue(row[RATE_COLUMN].comment.startswith("Pass rate: 88.9% (8 of 9 conclusive executions passed)"))
 
     def test_exactly_fifty_percent_is_yellow(self):
         self.assertCell([FAILED] + [PASSED] * 5 + [FAILED] * 4, "Failed", OVERVIEW_YELLOW)
@@ -131,6 +143,9 @@ class OverviewColourTests(unittest.TestCase):
         self.assertCell([PASSED] * 5, "Passed", OVERVIEW_GREEN)
         cell, analysis = self.assertCell([PASSED] * 5, "Passed", OVERVIEW_NEUTRAL, min_executions=6)
         self.assertIn("Diagnosis: Insufficient History", cell.comment)
+        row, _ = overview_row([PASSED] * 5, min_executions=6)
+        self.assertEqual((row[RATE_COLUMN].value, row[RATE_COLUMN].style), (1.0, OVERVIEW_NEUTRAL))  # shown, grey
+        self.assertIn("Grey: fewer than 6 conclusive executions", row[RATE_COLUMN].comment)
         self.assertCell([PASSED] * 6, "Passed", OVERVIEW_GREEN, min_executions=6)
 
     def test_blocked_and_inconclusive_executions_do_not_count(self):
@@ -149,11 +164,12 @@ class OverviewColourTests(unittest.TestCase):
 
     def test_missing_history_is_grey(self):
         collection, analysis, config = inputs([PASSED] * 5)
-        sheet = build_report(collection, analysis, config).overview
-        headers = [name for name, _ in sheet.columns]
-        row = dict(zip(headers, sheet.rows[0], strict=True))
-        cell = row["App B Platform X"]
+        _, rows = rows_by_case(build_report(collection, analysis, config).overview)
+        (row,) = rows.values()
+        cell = row["App B Platform X: Latest Status"]
         self.assertEqual((cell.value, cell.style), ("No History", OVERVIEW_NEUTRAL))
+        rate = row["App B Platform X: Pass Rate"]
+        self.assertEqual((rate.value, rate.style), (None, OVERVIEW_NEUTRAL))
 
     def test_notes_keep_every_detail(self):
         cell, _ = overview([BLOCKED] + [PASSED] * 5)
@@ -187,21 +203,26 @@ class FormatTests(unittest.TestCase):
     @unittest.skipUnless(openpyxl, "openpyxl is not installed")
     def test_xlsx_backgrounds_follow_the_pass_rate_with_a_neutral_font(self):
         expected = {
-            "Failed": ([FAILED] + [PASSED] * 19, "C6EFCE"),
-            "Passed": ([PASSED] + [FAILED] * 4, "FFC7CE"),
-            "Automation Issue": ([AUTOMATION_ISSUE] + [PASSED] * 4, "FFEB9C"),
-            "Blocked": ([BLOCKED] + [PASSED] * 3, "EDEDED"),
+            "Failed": ([FAILED] + [PASSED] * 19, "C6EFCE", 0.95),
+            "Passed": ([PASSED] + [FAILED] * 4, "FFC7CE", 0.2),
+            "Automation Issue": ([AUTOMATION_ISSUE] + [PASSED] * 4, "FFEB9C", 0.8),
+            "Blocked": ([BLOCKED] + [PASSED] * 3, "EDEDED", 1.0),
         }
-        for text, (statuses, fill) in expected.items():
+        for text, (statuses, fill, rate) in expected.items():
             with self.subTest(text=text):
                 collection, analysis, config = inputs(statuses)
                 workbook = openpyxl.load_workbook(io.BytesIO(render_xlsx(collection, analysis, config)))
                 overview, details = workbook["Stability Overview"], workbook["Stability Details"]
-                headers = [cell.value for cell in overview[1]]
-                cell = overview.cell(row=2, column=headers.index(COLUMN) + 1)
+                _, rows = xlsx_rows_by_case(overview)
+                (row,) = rows.values()
+                cell, rate_cell = row[COLUMN], row[RATE_COLUMN]
                 self.assertEqual(cell.value, text)
                 self.assertEqual(cell.fill.fgColor.rgb[-6:], fill)
                 self.assertEqual(cell.font.color.rgb[-6:], "1F1F1F")
+                self.assertEqual((rate_cell.value, rate_cell.number_format), (rate, "0.0%"))
+                self.assertEqual(rate_cell.data_type, "n")
+                self.assertEqual(rate_cell.fill.fgColor.rgb[-6:], fill)
+                self.assertEqual(rate_cell.font.color.rgb[-6:], "1F1F1F")
                 # Details keep the status colours (font and fill) of the latest status.
                 headers = [c.value for c in details[1]]
                 status = details.cell(row=2, column=headers.index("App A | Platform X: Latest Status") + 1)

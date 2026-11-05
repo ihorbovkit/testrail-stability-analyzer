@@ -13,6 +13,7 @@ from . import analysis_fixtures as af
 from . import fake_testrail as fx
 from .analysis_fixtures import APP_A, PLAT_X
 from .fake_testrail import BLOCKED, FAILED, NOW, PASSED
+from .report_fixtures import rows_by_case, xlsx_rows_by_case
 from .test_export_spreadsheet import table
 
 try:
@@ -27,6 +28,7 @@ RAW = (
 )
 REASON = "Payment sandbox unavailable sessionId=[redacted]"
 COLUMN = "App A | Platform X: Blocked Reason"
+STATUS = "App A Platform X: Latest Status"
 
 
 def record(result_id, status_id, days, comment=None):
@@ -134,8 +136,7 @@ class ReportOutputTests(unittest.TestCase):
 
     @staticmethod
     def rows(sheet):
-        headers = [name for name, _ in sheet.columns]
-        return headers, {row[0].value: dict(zip(headers, row, strict=True)) for row in sheet.rows}
+        return rows_by_case(sheet)
 
     def test_details_column_per_combination(self):
         headers, rows = self.rows(self.content().details)
@@ -151,17 +152,17 @@ class ReportOutputTests(unittest.TestCase):
 
     def test_overview_note_keeps_the_blocked_status(self):
         _, rows = self.rows(self.content().overview)
-        cell = rows[100]["App A Platform X"]
+        cell = rows[100][STATUS]
         self.assertEqual(cell.value, "Blocked")
         self.assertEqual(cell.comment.splitlines()[-1], f"Blocked reason: {REASON}")
-        self.assertEqual(rows[101]["App A Platform X"].comment.splitlines()[-1], "Blocked reason: Reason unavailable")
-        self.assertNotIn("Blocked reason", rows[102]["App A Platform X"].comment)
+        self.assertEqual(rows[101][STATUS].comment.splitlines()[-1], "Blocked reason: Reason unavailable")
+        self.assertNotIn("Blocked reason", rows[102][STATUS].comment)
 
     def test_disabled_extraction_omits_column_and_note(self):
         report = self.content(settings(enabled=False))
         self.assertFalse([name for name, _ in report.details.columns if name.endswith("Blocked Reason")])
         _, rows = self.rows(report.overview)
-        self.assertNotIn("Blocked reason", rows[100]["App A Platform X"].comment)
+        self.assertNotIn("Blocked reason", rows[100][STATUS].comment)
         info = {row[0].value: row[1].value for row in report.info.rows}
         self.assertEqual(info["Blocked reasons (latest status Blocked, shown histories)"], "disabled")
 
@@ -184,8 +185,8 @@ class ReportOutputTests(unittest.TestCase):
         collected, analysis, config = analysis_of(self.sample())
         workbook = openpyxl.load_workbook(io.BytesIO(render_xlsx(collected, analysis, config)))
         overview, details = workbook["Stability Overview"], workbook["Stability Details"]
-        headers = [cell.value for cell in overview[1]]
-        cell = overview.cell(2, headers.index("App A Platform X") + 1)
+        _, rows = xlsx_rows_by_case(overview)
+        cell = rows[100][STATUS]
         self.assertEqual(cell.value, "Blocked")
         self.assertIn(f"Blocked reason: {REASON}", cell.comment.text)
         headers = [cell.value for cell in details[1]]

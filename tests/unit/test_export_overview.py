@@ -13,7 +13,7 @@ from testrail_stability_analyzer.export import build_report, render_spreadsheet
 
 from . import analysis_fixtures as af
 from .fake_testrail import PASSED
-from .report_fixtures import CASE_TYPES, _with_test, sample_inputs, sample_settings
+from .report_fixtures import CASE_TYPES, _with_test, rows_by_case, sample_inputs, sample_settings
 
 CLASS_NAME = MappingProxyType({"custom_class": "pkg.Newest"})
 
@@ -26,20 +26,30 @@ def content(**kwargs):
 
 
 def overview(**kwargs):
-    sheet = content(**kwargs).overview
-    headers = [name for name, _ in sheet.columns]
-    return headers, {row[0].value: dict(zip(headers, row, strict=True)) for row in sheet.rows}
+    return rows_by_case(content(**kwargs).overview)
+
+
+STATUS, RATE = "App A Platform X: Latest Status", "App A Platform X: Pass Rate"
+STATUS_Y = "App A Platform Y: Latest Status"
 
 
 class OverviewTests(unittest.TestCase):
     def test_columns_are_compact_and_dynamic(self):
-        headers, rows = overview()
+        sheet = content().overview
+        case_columns = ["Test Case ID", "Test Case Title", "Feature / Test Group", "Class Name", "Test Type", "Defects"]
         self.assertEqual(
-            headers,
-            ["Test Case ID", "Test Case Title", "Feature / Test Group", "Class Name", "Test Type", "Defects",
-             "App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"],
+            [name for name, _ in sheet.columns], [*case_columns, *["Latest Status", "Pass Rate"] * 4]
+        )
+        # Row 1: blank above the case columns, then one group spanning each Latest Status / Pass Rate pair.
+        self.assertEqual(
+            sheet.header_groups,
+            ((None, 6), ("App A Platform X", 2), ("App A Platform Y", 2), ("App B Platform X", 2),
+             ("App B Platform Y", 2)),
         )  # fmt: skip
-        self.assertEqual(sorted(rows), list(range(100, 109)))
+        headers, rows = overview()
+        self.assertEqual(headers[6:8], [STATUS, RATE])
+        self.assertEqual(sorted(rows), list(range(100, 109)))  # one row per test case
+        self.assertEqual([row[0].value for row in sheet.rows], list(range(100, 109)))
 
     def test_statuses_and_states(self):
         _, rows = overview()
@@ -57,36 +67,80 @@ class OverviewTests(unittest.TestCase):
         }
         for case_id, (label, style) in expected.items():
             with self.subTest(case_id=case_id):
-                cell = rows[case_id]["App A Platform X"]
+                cell, rate = rows[case_id][STATUS], rows[case_id][RATE]
                 self.assertEqual((cell.value, cell.style), (label, style))
-        self.assertEqual(rows[100]["App B Platform X"].value, "No History")
+                self.assertEqual(rate.style, style)  # one background per Latest Status / Pass Rate pair
+        self.assertEqual(rows[100]["App B Platform X: Latest Status"].value, "No History")
 
     def test_insufficient_history_shows_latest_status_with_diagnosis_in_comment(self):
         _, rows = overview()
-        cell = rows[100]["App A Platform Y"]  # a single pass: the status is kept, the background is grey
+        cell = rows[100][STATUS_Y]  # a single pass: the status is kept, the background is grey
         self.assertEqual((cell.value, cell.style), ("Passed", "overview_neutral"))
         self.assertEqual(
             cell.comment.splitlines(),
             ["Diagnosis: Insufficient History", "Confidence: Low", "Executions: 1", "Pass rate: 100.0%",
              "Coverage: Complete", "Latest result: 2026-05-31 00:00 UTC"],
         )  # fmt: skip
-        self.assertNotIn("Stable", [row["App A Platform Y"].value for row in rows.values()])
+        self.assertNotIn("Stable", [row[STATUS_Y].value for row in rows.values()])
 
     def test_not_run_versus_applicability_unresolved(self):
         _, rows = overview()
-        self.assertEqual(rows[101]["App A Platform Y"].value, "Not Run")  # not included in a scanned run
+        self.assertEqual(rows[101][STATUS_Y].value, "Not Run")  # not included in a scanned run
         _, rows = overview(applicability=Applicability.UNKNOWN)
-        self.assertEqual(rows[101]["App A Platform Y"].value, "Applicability Unresolved")
+        self.assertEqual(rows[101][STATUS_Y].value, "Applicability Unresolved")
 
     def test_comments_hold_only_analyzed_values(self):
         _, rows = overview()
         comments = [cell.comment for row in rows.values() for cell in row.values() if cell.comment]
         self.assertTrue(comments)
+        base = ["Diagnosis", "Confidence", "Executions", "Pass rate", "Coverage", "Latest result"]
+        rate = ["Pass rate", "Executions", "Diagnosis", "Confidence", "Coverage"]
+        allowed = (base, [*base, "Blocked reason"], rate, [*rate, "Grey"],
+                   ["No collected run of this application/platform included the case."])  # fmt: skip
         for comment in comments:
-            keys = [line.split(":", 1)[0] for line in comment.splitlines()]
-            base = ["Diagnosis", "Confidence", "Executions", "Pass rate", "Coverage", "Latest result"]
-            self.assertIn(keys, (base, [*base, "Blocked reason"],
-                                 ["No collected run of this application/platform included the case."]))  # fmt: skip
+            self.assertIn([line.split(":", 1)[0] for line in comment.splitlines()], allowed)
+
+
+class OverviewPassRateTests(unittest.TestCase):
+    def test_numeric_pass_rate_or_empty(self):
+        _, rows = overview()
+        expected = {
+            100: 1.0,  # 5/5
+            101: 0.0,  # 0/2: below the minimum, still shown
+            102: 0.6,  # 3/5
+            103: 0.5,  # 1/2: an automation issue is conclusive
+            104: None,  # not applicable: no conclusive execution
+            105: None,  # not run
+            106: 1.0,  # partial: the calculated rate is kept, the background is grey
+            107: None,  # only blocked
+            108: None,  # no history for the identified combination
+        }
+        for case_id, value in expected.items():
+            with self.subTest(case_id=case_id):
+                cell = rows[case_id][RATE]
+                self.assertEqual(cell.value, value)
+                self.assertNotIsInstance(cell.value, str)
+                self.assertEqual(cell.number_format, "percent")
+
+    def test_below_minimum_shows_the_rate_on_grey(self):
+        _, rows = overview()
+        cell = rows[101][RATE]
+        self.assertEqual((cell.value, cell.style), (0.0, "overview_neutral"))
+        self.assertEqual(
+            cell.comment.splitlines(),
+            ["Pass rate: 0.0% (0 of 2 conclusive executions passed)", "Executions: 2",
+             "Diagnosis: Failure Evidence", "Confidence: Low", "Coverage: Complete",
+             "Grey: fewer than 5 conclusive executions"],
+        )  # fmt: skip
+
+    def test_notes_without_a_rate_or_history(self):
+        _, rows = overview()
+        self.assertEqual(
+            rows[107][RATE].comment.splitlines()[0], "Pass rate: n/a (no conclusive executions in the window)"
+        )
+        self.assertNotIn("Grey", rows[107][RATE].comment)
+        no_history = rows[108][RATE]
+        self.assertEqual((no_history.value, no_history.style, no_history.comment), (None, "overview_neutral", None))
 
 
 class CaseColumnTests(unittest.TestCase):
@@ -107,8 +161,8 @@ class CaseColumnTests(unittest.TestCase):
         settings = sample_settings()
         collection = af.report(outcomes, hist=af.histories(outcomes))
         sheet = build_report(collection, analyze(collection, settings), settings, case_types=CASE_TYPES).overview
-        headers = [name for name, _ in sheet.columns]
-        row = dict(zip(headers, sheet.rows[0], strict=True))
+        _, rows = rows_by_case(sheet)
+        row = rows[100]
         return row["Class Name"].value, row["Test Type"].value
 
     def test_case_fields_come_from_the_newest_result_not_the_highest_run_id(self):

@@ -17,7 +17,7 @@ from . import analysis_fixtures as af
 from . import fake_testrail as fx
 from .analysis_fixtures import outcome, rec
 from .fake_testrail import FAILED, PASSED
-from .report_fixtures import CASE_TYPES, HOSTILE_DEFECT, sample_inputs
+from .report_fixtures import CASE_TYPES, HOSTILE_DEFECT, sample_inputs, xlsx_rows_by_case
 
 try:
     import openpyxl
@@ -31,8 +31,7 @@ def render(**kwargs):
 
 
 def by_header(ws):
-    headers = [cell.value for cell in ws[1]]
-    return headers, {row[0].value: dict(zip(headers, row, strict=True)) for row in ws.iter_rows(min_row=2)}
+    return xlsx_rows_by_case(ws)
 
 
 def fill(cell):
@@ -63,7 +62,10 @@ class WorkbookTests(unittest.TestCase):
 
     def test_overview_columns_rows_and_statuses(self):
         headers, rows = by_header(self.workbook["Stability Overview"])
-        self.assertEqual(headers[6:], ["App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"])
+        combinations = ["App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"]
+        self.assertEqual(
+            headers[6:], [f"{name}: {metric}" for name in combinations for metric in ("Latest Status", "Pass Rate")]
+        )
         self.assertEqual(list(rows), list(range(100, 109)))  # one row per case, numeric IDs
         cases = {
             100: ("Passed", "C6EFCE"),
@@ -75,9 +77,10 @@ class WorkbookTests(unittest.TestCase):
         }
         for case_id, (label, colour) in cases.items():
             with self.subTest(case_id=case_id):
-                cell = rows[case_id]["App A Platform X"]
+                cell = rows[case_id]["App A Platform X: Latest Status"]
                 self.assertEqual((cell.value, fill(cell)), (label, colour))
-        note = rows[100]["App A Platform Y"].comment
+                self.assertEqual(fill(rows[case_id]["App A Platform X: Pass Rate"]), colour)
+        note = rows[100]["App A Platform Y: Latest Status"].comment
         self.assertTrue(note.text.startswith("Diagnosis: Insufficient History\n"))
 
     def test_case_columns(self):
@@ -132,15 +135,59 @@ class WorkbookTests(unittest.TestCase):
         self.assertEqual(rows[106]["App A | Platform X: Diagnosis"].value, "Partial")
 
     def test_frozen_headers_filters_and_widths(self):
-        for name, frozen in (("Stability Overview", "B2"), ("Stability Details", "B2"), ("Report Info", "A2")):
+        for name, frozen in (("Stability Details", "B2"), ("Report Info", "A2")):
             ws = self.workbook[name]
             with self.subTest(sheet=name):
                 self.assertEqual(ws.freeze_panes, frozen)
                 self.assertEqual(ws.auto_filter.ref, f"A1:{ws.cell(1, ws.max_column).column_letter}{ws.max_row}")
                 self.assertTrue(all(cell.font.bold for cell in ws[1]))
                 self.assertGreater(ws.column_dimensions["A"].width, 10)
+                self.assertEqual(list(ws.merged_cells.ranges), [])
         overview = self.workbook["Stability Overview"]
-        self.assertEqual(overview.max_column, 10)  # compact: no per-metric columns
+        self.assertEqual(overview.max_column, 6 + 4 * 2)  # compact: Latest Status and Pass Rate per combination
+        self.assertEqual(overview.max_row, 2 + 9)  # two header rows, one row per test case
+        self.assertGreater(overview.column_dimensions["A"].width, 10)
+
+    def test_overview_two_level_header(self):
+        ws = self.workbook["Stability Overview"]
+        self.assertEqual(ws.freeze_panes, "B3")  # both header rows and the Test Case ID column
+        self.assertEqual(ws.auto_filter.ref, "A2:N11")  # starts at the second header row, covers every data row
+        # Only horizontal merges in row 1, one per combination over its Latest Status / Pass Rate pair.
+        self.assertEqual(sorted(str(r) for r in ws.merged_cells.ranges), ["G1:H1", "I1:J1", "K1:L1", "M1:N1"])
+        for merged in ws.merged_cells.ranges:
+            self.assertEqual((merged.min_row, merged.max_row, merged.max_col - merged.min_col), (1, 1, 1))
+        self.assertEqual(
+            [ws.cell(1, column).value for column in (7, 9, 11, 13)],
+            ["App A Platform X", "App A Platform Y", "App B Platform X", "App B Platform Y"],
+        )
+        # Case columns: headers in row 2 (the filter row), blank grey header cells above them.
+        self.assertEqual(
+            [ws.cell(2, column).value for column in range(1, 7)],
+            ["Test Case ID", "Test Case Title", "Feature / Test Group", "Class Name", "Test Type", "Defects"],
+        )
+        for column in range(1, 7):
+            above = ws.cell(1, column)
+            self.assertIsNone(above.value)
+            self.assertEqual(fill(above), "D9D9D9")
+        self.assertEqual([ws.cell(2, column).value for column in range(7, 15)], ["Latest Status", "Pass Rate"] * 4)
+        for column in range(1, 15):
+            self.assertTrue(ws.cell(2, column).font.bold)
+        self.assertTrue(ws.cell(1, 7).font.bold)
+        self.assertEqual(ws.cell(1, 7).alignment.horizontal, "center")
+
+    def test_overview_pass_rate_is_a_numeric_percentage(self):
+        _, rows = by_header(self.workbook["Stability Overview"])
+        rate = rows[102]["App A Platform X: Pass Rate"]
+        self.assertEqual((rate.value, rate.number_format, rate.data_type), (0.6, "0.0%", "n"))
+        self.assertEqual(fill(rate), "FFEB9C")
+        self.assertTrue(rate.comment.text.startswith("Pass rate: 60.0% (3 of 5 conclusive executions passed)"))
+        thin = rows[101]["App A Platform X: Pass Rate"]  # 0 of 2: shown, grey
+        self.assertEqual((thin.value, fill(thin)), (0, "EDEDED"))
+        self.assertIn("Grey: fewer than 5 conclusive executions", thin.comment.text)
+        empty = rows[108]["App A Platform X: Pass Rate"]
+        self.assertEqual((empty.value, fill(empty), empty.comment), (None, "EDEDED", None))
+        status = rows[102]["App A Platform X: Latest Status"]
+        self.assertEqual(status.number_format, "General")  # the status stays text
 
     def test_report_info(self):
         ws = self.workbook["Report Info"]

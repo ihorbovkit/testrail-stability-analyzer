@@ -150,7 +150,8 @@ def _write_sheet(ws: Any, sheet: Worksheet, styles: _Styles, frozen_column: str)
                 cell.font, cell.fill = styles.fonts[value.style], styles.fills[value.style]
             if value.comment:
                 comment = Comment(safe_text(value.comment), AUTHOR)
-                comment.width, comment.height = 260, 130
+                # Taller for long notes (e.g. a long execution history), so no line is hidden.
+                comment.width, comment.height = 260, max(130, 16 * (value.comment.count("\n") + 1) + 16)
                 cell.comment = comment
     ws.freeze_panes = f"{frozen_column}{header_row + 1}"
     last = get_column_letter(len(sheet.columns))

@@ -14,7 +14,7 @@ from .fake_testrail import AUTOMATION_ISSUE, FAILED, NOT_APPLICABLE, PASSED
 
 NS = {"ss": "urn:schemas-microsoft-com:office:spreadsheet"}
 SS = "{urn:schemas-microsoft-com:office:spreadsheet}"
-METRICS = 10  # including Blocked Reason
+METRICS = 11  # including Known Issue Count and Blocked Reason
 
 
 def parse(xml):
@@ -80,9 +80,9 @@ class WorkbookStructureTests(unittest.TestCase):
         names, _ = table(render(runs([PASSED] * 5), settings=settings))
         self.assertEqual(names[:4], ["Test Case ID", "Test Case Title", "Test Type", "Defects"])
         self.assertEqual(len(names), 4 + 4 * METRICS)
-        self.assertEqual(names[4:14], [column(metric=m) for m in (
+        self.assertEqual(names[4:15], [column(metric=m) for m in (
             "Latest Status", "Latest Result (UTC)", "Executions", "Pass Rate", "Failure Rate",
-            "Automation Issue Rate", "Diagnosis", "Confidence", "Coverage", "Blocked Reason",
+            "Automation Issue Rate", "Known Issue Count", "Diagnosis", "Confidence", "Coverage", "Blocked Reason",
         )])  # fmt: skip
 
     def test_filters_limit_the_combinations(self):

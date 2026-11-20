@@ -77,6 +77,7 @@ STATUS_LABELS: Final[Mapping[StatusCategory, tuple[str, str]]] = {
     StatusCategory.PASSED: ("Passed", GREEN),
     StatusCategory.FAILED: ("Failed", RED),
     StatusCategory.AUTOMATION_ISSUE: ("Automation Issue", YELLOW),
+    StatusCategory.KNOWN_ISSUE: ("Known Issue", RED),
     StatusCategory.BLOCKED: ("Blocked", NEUTRAL),
     StatusCategory.RETEST: ("Retest", NEUTRAL),
     StatusCategory.NOT_RUN: ("Not Run", NEUTRAL),
@@ -156,6 +157,7 @@ COMBINATION_METRICS: Final = (
     ("Pass Rate", 65),
     ("Failure Rate", 70),
     ("Automation Issue Rate", 80),
+    ("Known Issue Count", 75),
     ("Diagnosis", 150),
     ("Confidence", 75),
     ("Coverage", 105),
@@ -164,6 +166,21 @@ BLOCKED_REASON_METRIC: Final = ("Blocked Reason", 220)  # added when report.bloc
 # Overview columns per combination, below a merged "<application> <platform>" header.
 OVERVIEW_METRICS: Final = (("Latest Status", 110), ("Pass Rate", 70))
 REASON_UNAVAILABLE: Final = "Reason unavailable"
+# Pass Rate notes: one code per execution of the history window, oldest to newest.
+EXECUTION_CODES: Final[Mapping[StatusCategory, tuple[str, str]]] = {
+    StatusCategory.PASSED: ("P", "Passed"),
+    StatusCategory.FAILED: ("F", "Failed"),
+    StatusCategory.AUTOMATION_ISSUE: ("A", "AU Issue"),
+    StatusCategory.KNOWN_ISSUE: ("K", "Known Issue"),
+    StatusCategory.BLOCKED: ("B", "Blocked"),
+    StatusCategory.RETEST: ("R", "Retest"),
+    StatusCategory.NOT_RUN: ("N", "Not Run"),
+    StatusCategory.NOT_APPLICABLE: ("X", "Not Applicable"),
+}
+UNKNOWN_EXECUTION_CODE: Final = ("?", "Unknown")  # unknown status, or no status-bearing result
+EXECUTIONS_PER_LINE: Final = 20  # long histories wrap onto further lines; nothing is truncated
+EXECUTIONS_HEADING: Final = "Recent executions (oldest → newest):"
+NO_EXECUTIONS_NOTE: Final = "No executions in the history window."
 LEGEND: Final = (
     (
         "Green",
@@ -178,9 +195,9 @@ LEGEND: Final = (
     ),
     (
         "Red",
-        "Stability Details: failure evidence (executions in the window ended as failed) or a latest status of "
-        "Failed. This does not confirm an application defect. Stability Overview background: historical Pass "
-        "Rate below 50%.",
+        "Stability Details: failure evidence (executions in the window ended as failed or as a known issue) or a "
+        "latest status of Failed or Known Issue. Failed alone does not confirm an application defect; Known Issue "
+        "does. Stability Overview background: historical Pass Rate below 50%.",
     ),
     (
         "Neutral",
@@ -191,8 +208,23 @@ LEGEND: Final = (
     ),
     ("Executions", "Distinct Test Runs in the history window; retries in one run count once. Capped at max runs."),
     (
+        "Statuses",
+        "Passed: test execution completed successfully. Failed: execution failed and has not been classified as "
+        "AU Issue or Known Issue. Automation Issue (AU Issue): failure attributed to automation or test "
+        "maintenance. Known Issue: failure attributed to a confirmed product defect. Blocked: test execution was "
+        "skipped or blocked for an expected reason.",
+    ),
+    (
         "Rates",
-        "Count / conclusive executions (passed + failed + automation issue); blank when there are none.",
+        "Count / conclusive executions (passed + failed + automation issue + known issue); blank when there are "
+        "none. Failure Rate counts Failed only; Known Issue Count is the number of executions in the window that "
+        "ended as a known issue.",
+    ),
+    (
+        "Known Issue",
+        "A confirmed product defect. It counts against this report's Pass Rate like a failed execution, because "
+        "the report evaluates historical application stability. The TestRail dashboard may be configured to "
+        "exclude Known Issue from its own pass-rate metrics; that difference is intentional.",
     ),
     ("Latest Status", "Latest known result for the combination; it may be older than the history window."),
     ("Defects", "Defect IDs referenced by any result of the case in the period, across all combinations."),
@@ -216,15 +248,15 @@ LEGEND: Final = (
     (
         "Overview",
         "Two columns per application/platform (XLSX only). Latest Status: the latest execution status of the "
-        "combination (Passed, Failed, Blocked, Automation Issue, ...) or a state (Not Run, Not Applicable, "
-        "Partial, Applicability Unresolved, No History), in a neutral font. Pass Rate: the historical Pass Rate "
-        "as a number (passed / conclusive executions = passed + failed + automation issue, distinct runs in the "
-        "history window); blank without conclusive executions. Both cells share one background, the Pass Rate "
-        "compared exactly without rounding: green at least 90%, yellow at least 50% and below 90%, red below "
-        "50%. Grey when there are fewer conclusive executions than Min conclusive executions (the Pass Rate is "
-        "still shown), and always for Partial, Not Applicable, Not Run, Applicability Unresolved and No History. "
-        "Neither the latest status nor the diagnosis changes the background, so a Failed cell can be green and "
-        "a Passed cell red. The cell notes and Stability Details show the diagnosis.",
+        "combination (Passed, Failed, Known Issue, Blocked, Automation Issue, ...) or a state (Not Run, Not "
+        "Applicable, Partial, Applicability Unresolved, No History), in a neutral font. Pass Rate: the historical "
+        "Pass Rate as a number (passed / conclusive executions = passed + failed + automation issue + known issue, "
+        "distinct runs in the history window); blank without conclusive executions. Both cells share one "
+        "background, the Pass Rate compared exactly without rounding: green at least 90%, yellow at least 50% and "
+        "below 90%, red below 50%. Grey when there are fewer conclusive executions than Min conclusive executions "
+        "(the Pass Rate is still shown), and always for Partial, Not Applicable, Not Run, Applicability Unresolved "
+        "and No History. Neither the latest status nor the diagnosis changes the background, so a Failed cell can "
+        "be green and a Passed cell red. The cell notes and Stability Details show the diagnosis.",
     ),
     (
         "Confidence",
@@ -499,7 +531,7 @@ def _combination_cells(
     if analysis is None:
         label = "N/A" if applicability is Applicability.NOT_APPLICABLE else NO_HISTORY_LABEL
         state = Cell(label, NEUTRAL)
-        return [state, *[Cell(None)] * 5, state, Cell(None), Cell(None), *reason_cells]
+        return [state, *[Cell(None)] * 6, state, Cell(None), Cell(None), *reason_cells]
     m = analysis.metrics
     if m.latest_category is not None:
         status_label, status_style = STATUS_LABELS[m.latest_category]
@@ -513,6 +545,7 @@ def _combination_cells(
         Cell(m.pass_rate.value, "percent"),
         Cell(m.failure_rate.value, "percent"),
         Cell(m.automation_issue_rate.value, "percent"),
+        Cell(m.known_issue),
         Cell(diagnosis_label, diagnosis_style),
         Cell(CONFIDENCE_LABELS[analysis.confidence]),
         Cell(COVERAGE_LABELS[analysis.coverage]),
@@ -557,7 +590,7 @@ def overview_style(analysis: KeyAnalysis, min_executions: int) -> str:
     """The Overview background: the historical Pass Rate band, or grey without a reliable Pass Rate.
 
     The Pass Rate is passed / conclusive executions (passed + failed +
-    automation issue) and is compared as an exact fraction, so 9/10 is green
+    automation issue + known issue) and is compared as an exact fraction, so 9/10 is green
     and 1/2 is yellow. The latest status and the diagnosis never change the
     band; only grey states (:data:`OVERVIEW_GREY_DIAGNOSES`, a latest status of
     Not Applicable, or fewer than ``min_executions`` conclusive executions)
@@ -586,7 +619,7 @@ def overview_pass_rate_cell(analysis: KeyAnalysis | None, *, min_executions: int
     cell is empty and grey.
     """
     if analysis is None:
-        return Cell(None, OVERVIEW_NEUTRAL, number_format="percent")
+        return Cell(None, OVERVIEW_NEUTRAL, f"{NO_EXECUTIONS_NOTE}\n{NO_HISTORY_NOTE}", "percent")
     return Cell(
         analysis.metrics.pass_rate.value,
         overview_style(analysis, min_executions),
@@ -596,21 +629,44 @@ def overview_pass_rate_cell(analysis: KeyAnalysis | None, *, min_executions: int
 
 
 def _pass_rate_comment(analysis: KeyAnalysis, min_executions: int) -> str:
+    """The execution history behind the Pass Rate: one status code per execution, oldest to newest.
+
+    The executions are the analyzed window (distinct runs, capped at max runs),
+    so the sequence matches the Pass Rate; the rightmost code is the latest
+    execution. Pass rate, diagnosis, confidence and coverage are shown elsewhere.
+    """
     m = analysis.metrics
-    rate = m.pass_rate
-    if rate.denominator == 0:
-        lines = ["Pass rate: n/a (no conclusive executions in the window)"]
+    window = analysis.history.window  # newest first
+    if not window:
+        lines = [NO_EXECUTIONS_NOTE]
+        if m.latest_category is not None:
+            status = _execution_code(m.latest_category)[1]
+            if m.latest_executed_on is None:  # undated: no evidence that it lies before the window
+                lines.append(f"Latest known result: {status}, execution date unknown.")
+            else:
+                lines.append(
+                    f"Latest known result: {status} on {m.latest_executed_on.astimezone(UTC):%Y-%m-%d}, "
+                    "before the window."
+                )
     else:
-        lines = [f"Pass rate: {rate.value:.1%} ({rate.numerator} of {rate.denominator} conclusive executions passed)"]
-    lines += [
-        f"Executions: {m.executions}",
-        f"Diagnosis: {DIAGNOSIS_LABELS[analysis.diagnosis][0]}",
-        f"Confidence: {CONFIDENCE_LABELS[analysis.confidence]}",
-        f"Coverage: {COVERAGE_LABELS[analysis.coverage]}",
-    ]
+        codes = [_execution_code(outcome.category) for outcome in reversed(window)]
+        sequence = [code for code, _ in codes]
+        count = f"{m.executions} execution(s)"
+        if m.window_total > m.executions:
+            count = f"latest {m.executions} of {m.window_total} executions (max runs)"
+        lines = [
+            EXECUTIONS_HEADING,
+            *(" ".join(sequence[i : i + EXECUTIONS_PER_LINE]) for i in range(0, len(sequence), EXECUTIONS_PER_LINE)),
+            f"{count}; latest: {codes[-1][1]}",
+        ]
+    rate = m.pass_rate
     if 0 < rate.denominator < min_executions:
         lines.append(f"Grey: fewer than {min_executions} conclusive executions")
     return "\n".join(lines)
+
+
+def _execution_code(category: StatusCategory | None) -> tuple[str, str]:
+    return EXECUTION_CODES.get(category, UNKNOWN_EXECUTION_CODE) if category is not None else UNKNOWN_EXECUTION_CODE
 
 
 def _overview_comment(analysis: KeyAnalysis, *, blocked_reasons: bool = False) -> str:

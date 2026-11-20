@@ -14,11 +14,20 @@ from ..collection.models import ExecutionHistory, RunOutcome
 from ..config.settings import StatusCategory
 from .models import Rate, StabilityMetrics, StatusTransition
 
+# Categories in the pass-rate denominator. A known issue (confirmed product
+# defect) counts against the pass rate like a failure.
+CONCLUSIVE_CATEGORIES = (
+    StatusCategory.PASSED,
+    StatusCategory.FAILED,
+    StatusCategory.AUTOMATION_ISSUE,
+    StatusCategory.KNOWN_ISSUE,
+)
+
 
 def compute_metrics(history: ExecutionHistory) -> StabilityMetrics:
     window = history.window
     counts = Counter(outcome.category for outcome in window)
-    evidence = counts[StatusCategory.PASSED] + counts[StatusCategory.FAILED] + counts[StatusCategory.AUTOMATION_ISSUE]
+    evidence = sum(counts[category] for category in CONCLUSIVE_CATEGORIES)
     retried = sum(1 for outcome in window if len(outcome.results) > 1)
     latest = history.latest_known
     return StabilityMetrics(
@@ -34,6 +43,7 @@ def compute_metrics(history: ExecutionHistory) -> StabilityMetrics:
         failed=counts[StatusCategory.FAILED],
         blocked=counts[StatusCategory.BLOCKED],
         automation_issue=counts[StatusCategory.AUTOMATION_ISSUE],
+        known_issue=counts[StatusCategory.KNOWN_ISSUE],
         not_applicable=counts[StatusCategory.NOT_APPLICABLE],
         retest=counts[StatusCategory.RETEST],
         not_run=counts[StatusCategory.NOT_RUN],

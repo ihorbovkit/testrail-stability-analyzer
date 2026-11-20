@@ -19,7 +19,7 @@ max_runs = 10
 lookback_limit_days = 365
 
 [analysis]
-# Conclusive executions (passed, failed, automation issue) needed for medium
+# Conclusive executions (passed, failed, automation issue, known issue) needed for medium
 # confidence and for a "stable" diagnosis. Must be <= history.max_runs; when
 # unset, 5 (or history.max_runs, if smaller).
 min_executions = 5
@@ -75,9 +75,14 @@ sources = ["configuration", "run_name"]
 
 # Analyzer category -> TestRail status system names or numeric IDs.
 # Categories: passed, failed, blocked, not_run, retest, not_applicable,
-# automation_issue. Custom statuses are optional.
+# automation_issue, known_issue. Custom statuses are optional; an unmapped
+# custom status is reported as unknown.
+#   automation_issue  failure attributed to automation or test maintenance
+#   known_issue       failure attributed to a confirmed product defect; it counts
+#                     against the analyzer's pass rate like a failed execution
 [mappings.statuses]
 # automation_issue = ["automation_issue"]
+# known_issue = ["triage"]
 
 # Optional targeted collection. With plan or run IDs, only those plans (with
 # their child runs) and runs are collected; no project-wide discovery is made.

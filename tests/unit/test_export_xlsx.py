@@ -120,7 +120,7 @@ class WorkbookTests(unittest.TestCase):
 
     def test_details_numeric_percentages_and_dates(self):
         headers, rows = by_header(self.workbook["Stability Details"])
-        self.assertEqual(len(headers), 6 + 4 * 10)
+        self.assertEqual(len(headers), 6 + 4 * 11)
         row = rows[102]
         rate = row["App A | Platform X: Pass Rate"]
         self.assertEqual((rate.value, rate.number_format), (0.6, "0.0%"))
@@ -180,12 +180,13 @@ class WorkbookTests(unittest.TestCase):
         rate = rows[102]["App A Platform X: Pass Rate"]
         self.assertEqual((rate.value, rate.number_format, rate.data_type), (0.6, "0.0%", "n"))
         self.assertEqual(fill(rate), "FFEB9C")
-        self.assertTrue(rate.comment.text.startswith("Pass rate: 60.0% (3 of 5 conclusive executions passed)"))
+        self.assertTrue(rate.comment.text.startswith("Recent executions (oldest → newest):\n"))
         thin = rows[101]["App A Platform X: Pass Rate"]  # 0 of 2: shown, grey
         self.assertEqual((thin.value, fill(thin)), (0, "EDEDED"))
         self.assertIn("Grey: fewer than 5 conclusive executions", thin.comment.text)
         empty = rows[108]["App A Platform X: Pass Rate"]
-        self.assertEqual((empty.value, fill(empty), empty.comment), (None, "EDEDED", None))
+        self.assertEqual((empty.value, fill(empty)), (None, "EDEDED"))
+        self.assertTrue(empty.comment.text.startswith("No executions in the history window."))
         status = rows[102]["App A Platform X: Latest Status"]
         self.assertEqual(status.number_format, "General")  # the status stays text
 

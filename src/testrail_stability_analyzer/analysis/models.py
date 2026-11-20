@@ -33,6 +33,7 @@ class Diagnosis(StrEnum):
     """
 
     STABLE = "stable"  # at least min_executions conclusive executions, all passed
+    # Below, "failed" includes known issues (confirmed product defects).
     INCONSISTENT = "inconsistent"  # passed and failed executions coexist; not proof of flakiness
     AUTOMATION_ISSUE_EVIDENCE = "automation_issue_evidence"  # automation issues, no failures
     APPLICATION_FAILURE_EVIDENCE = "application_failure_evidence"  # failures only, no passes or automation issues
@@ -80,8 +81,10 @@ class StabilityMetrics:
     """Objective metrics over the capped history window (one execution per distinct run).
 
     ``evidence_count`` (the pass-rate denominator) counts conclusive executions:
-    passed + failed + automation issue. Blocked, retest, not run, not applicable,
-    and unknown executions are counted but excluded from the rates.
+    passed + failed + automation issue + known issue. A known issue (confirmed
+    product defect) counts against the pass rate like a failure but is kept
+    apart from ``failed``. Blocked, retest, not run, not applicable, and unknown
+    executions are counted but excluded from the rates.
     """
 
     # Latest known result; may be older than the window.
@@ -97,13 +100,14 @@ class StabilityMetrics:
     failed: int
     blocked: int
     automation_issue: int
+    known_issue: int
     not_applicable: int
     retest: int
     not_run: int
     unknown: int
     unverified_finals: int  # executions whose run's result stream was cut by the record cap
     pass_rate: Rate  # passed / evidence_count
-    failure_rate: Rate  # failed / evidence_count
+    failure_rate: Rate  # failed / evidence_count (known issues are not included)
     automation_issue_rate: Rate  # automation_issue / evidence_count
     retry_triage_count: int  # executions with more than one result record
     retry_triage_rate: Rate  # retry_triage_count / executions
@@ -114,7 +118,12 @@ class StabilityMetrics:
 
     @property
     def evidence_count(self) -> int:
-        return self.passed + self.failed + self.automation_issue
+        return self.passed + self.failed + self.automation_issue + self.known_issue
+
+    @property
+    def failures(self) -> int:
+        """Failed and known-issue executions: the failures the diagnosis rules weigh against passes."""
+        return self.failed + self.known_issue
 
 
 class DefectCoverage(StrEnum):

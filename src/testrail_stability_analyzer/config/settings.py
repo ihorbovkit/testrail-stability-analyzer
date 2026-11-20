@@ -86,6 +86,9 @@ class StatusCategory(StrEnum):
     RETEST = "retest"
     NOT_APPLICABLE = "not_applicable"
     AUTOMATION_ISSUE = "automation_issue"
+    # A failure attributed to a confirmed product defect. Counts as a failed,
+    # conclusive execution (in the pass-rate denominator), kept apart from FAILED.
+    KNOWN_ISSUE = "known_issue"
     # Assigned when no mapping applies; cannot be configured.
     UNKNOWN = "unknown"
 
@@ -117,7 +120,7 @@ class HistorySettings:
 
 @dataclass(frozen=True, slots=True)
 class AnalysisSettings:
-    # Conclusive executions (passed, failed, automation issue) needed for medium
+    # Conclusive executions (passed, failed, automation issue, known issue) needed for medium
     # confidence and for a "stable" diagnosis. Must not exceed history.max_runs.
     min_executions: int = DEFAULT_MIN_EXECUTIONS
 

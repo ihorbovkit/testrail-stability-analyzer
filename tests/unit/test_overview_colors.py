@@ -114,7 +114,7 @@ class OverviewColourTests(unittest.TestCase):
         self.assertCell([PASSED] * 8 + [FAILED], "Passed", OVERVIEW_YELLOW)  # 8/9 = 88.9%
         row, _ = overview_row([PASSED] * 8 + [FAILED])
         self.assertAlmostEqual(row[RATE_COLUMN].value, 8 / 9)
-        self.assertTrue(row[RATE_COLUMN].comment.startswith("Pass rate: 88.9% (8 of 9 conclusive executions passed)"))
+        self.assertEqual(row[RATE_COLUMN].comment.splitlines()[1], "F P P P P P P P P")  # oldest to newest
 
     def test_exactly_fifty_percent_is_yellow(self):
         self.assertCell([FAILED] + [PASSED] * 5 + [FAILED] * 4, "Failed", OVERVIEW_YELLOW)

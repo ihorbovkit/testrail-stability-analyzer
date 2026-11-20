@@ -133,9 +133,10 @@ settings = load_settings("config/local/config.toml")
   single or multiple suites.
 - **Custom statuses are optional.** `mappings.statuses` maps analyzer
   categories (`passed`, `failed`, `blocked`, `not_run`, `retest`,
-  `not_applicable`, `automation_issue`) to TestRail status system names or IDs.
-  Statuses that match no rule are reported as `unknown` (see
+  `not_applicable`, `automation_issue`, `known_issue`) to TestRail status system
+  names or IDs. Statuses that match no rule are reported as `unknown` (see
   [Status resolution](#status-resolution)); `unknown` itself cannot be mapped.
+  See [Status categories](#status-categories) for Known Issue.
 - **The latest known result is searched for beyond the history window**, up
   to `history.lookback_limit_days` (default 365). `0` removes the limit, at
   the cost of scanning the whole project history.
@@ -371,8 +372,8 @@ outcome is the **latest record that carries a status**:
 - Records without a timestamp sort before timestamped ones; if no record has a
   timestamp, `executed_on` stays `None` (never taken from the run or plan).
 - Statuses are resolved with `StatusResolver`. Failed stays failed (not an
-  application defect by default), a configured automation-issue status stays
-  distinct, blocked stays blocked, not applicable is distinct from not run, and
+  application defect by default), configured automation-issue and known-issue
+  statuses stay distinct, blocked stays blocked, not applicable is distinct from not run, and
   unmapped statuses stay `unknown`.
 - A test without status-bearing records has `final = None`; its current
   TestRail status is kept in `current_status`.
@@ -580,15 +581,47 @@ runs** in `history.window` (final result within `history.window_days`, at most
 `history.max_runs`). Result records only feed the retry/triage metrics and the
 defect aggregation.
 
+### Status categories
+
+| Status | Category | Meaning | Pass rate |
+|---|---|---|---|
+| Passed | `passed` | test execution completed successfully | counts as passed |
+| Failed | `failed` | execution failed and has not been classified as AU Issue or Known Issue | counts against |
+| AU Issue | `automation_issue` | failure attributed to automation or test maintenance | counts against |
+| Known Issue | `known_issue` | failure attributed to a confirmed product defect | counts against |
+| Blocked | `blocked` | test execution was skipped or blocked for an expected reason | excluded |
+
+Passed, Failed, and Blocked are TestRail system statuses and resolve
+automatically. AU Issue and Known Issue are custom statuses and must be mapped
+by system name or ID, for example:
+
+```toml
+[mappings.statuses]
+automation_issue = ["automation_issue"]
+known_issue = ["triage"]
+```
+
+Without a `known_issue` mapping the status is reported as `unknown`, as any
+unmapped custom status, and reports behave as before.
+
+**TestRail dashboard pass rate vs. analyzer pass rate.** A TestRail dashboard
+may be configured to exclude Known Issue from its pass-rate metrics. This
+analyzer intentionally counts Known Issue as a failed application execution:
+it evaluates historical execution outcomes and application stability, so a
+confirmed product defect lowers the Pass Rate. For example, 8 Passed and 2
+Known Issue is an 80% Pass Rate here. Known Issue is still shown separately
+(Latest Status label, Known Issue Count column) and never requires a linked
+defect.
+
 ### Metrics and denominators
 
 | Metric | Definition |
 |---|---|
 | `executions` | distinct runs in the window (after the cap); `window_total` is before the cap |
-| `passed`, `failed`, `blocked`, `automation_issue`, `not_applicable`, `retest`, `not_run`, `unknown` | final category of each execution |
-| `evidence_count` | conclusive executions: `passed + failed + automation_issue` |
+| `passed`, `failed`, `blocked`, `automation_issue`, `known_issue`, `not_applicable`, `retest`, `not_run`, `unknown` | final category of each execution |
+| `evidence_count` | conclusive executions: `passed + failed + automation_issue + known_issue` |
 | `pass_rate` | `passed / evidence_count` |
-| `failure_rate` | `failed / evidence_count` |
+| `failure_rate` | `failed / evidence_count` (Failed only; known issues are counted in `known_issue`) |
 | `automation_issue_rate` | `automation_issue / evidence_count`, tracked separately from failures |
 | `retry_triage_count` / `retry_triage_rate` | executions with more than one result record / `executions` |
 | `status_changed_within_run` | executions with a category change between consecutive status-bearing records (e.g. failed → passed, or failed → passed → failed); comment-only records are ignored |
@@ -601,8 +634,10 @@ values; `value` is `None` when the denominator is zero.
 
 ### Diagnosis
 
-Rules are applied in order; the first match wins (P = passed, F = failed,
-A = automation issue, E = P + F + A, n = `analysis.min_executions`):
+Rules are applied in order; the first match wins (P = passed, F = failed +
+known issue, A = automation issue, E = P + F + A, n = `analysis.min_executions`).
+A known issue is weighed exactly like a failed execution; only the reasons
+name it separately:
 
 | # | Diagnosis | Rule |
 |---|---|---|
@@ -732,12 +767,12 @@ Row 3+: one row per Test Case ID
 | Partial | collection was incomplete for the combination |
 | Applicability Unresolved | not executed, and applicability metadata is missing |
 | Not Run | no execution, or none within the history window |
-| Passed, Failed, Blocked, Automation Issue, Retest, Unknown Status | otherwise: the latest known status, also when history is insufficient |
+| Passed, Failed, Known Issue, Blocked, Automation Issue, Retest, Unknown Status | otherwise: the latest known status, also when history is insufficient |
 
 The **text** is the latest execution status (or state above), in one dark,
 neutral font. The **background** of both the Latest Status and the Pass Rate
 cell is the historical **Pass Rate** of the combination: passed / conclusive executions (passed + failed + automation
-issue, one per distinct run in the history window), compared as an exact
+issue + known issue, one per distinct run in the history window), compared as an exact
 fraction without rounding:
 
 | Background | When |
@@ -760,9 +795,33 @@ sorts and filters as a number. It has the same background as the Latest
 Status cell next to it. It shows the calculated Pass Rate also when there are
 fewer conclusive executions than `analysis.min_executions` (then on grey), and
 for Partial histories; it is blank when there is no conclusive execution or
-no history. Its note shows the fraction (`8 of 9 conclusive executions
-passed`), executions, diagnosis, confidence, coverage, and, on grey because of
-too few conclusive executions, the minimum.
+no history. Its note shows the **execution history** behind the rate: one
+code per execution in the analyzed window (distinct runs, capped at
+`history.max_runs`, final result of each run), oldest to newest, so the
+rightmost code is the latest execution:
+
+```text
+Recent executions (oldest → newest):
+P P P F F A A K
+8 execution(s); latest: Known Issue
+```
+
+| Code | Status | Code | Status |
+|---|---|---|---|
+| `P` | Passed | `B` | Blocked |
+| `F` | Failed | `R` | Retest |
+| `A` | AU Issue (`automation_issue`) | `N` | Not Run |
+| `K` | Known Issue (`known_issue`) | `X` | Not Applicable |
+| `?` | unknown or unmapped status | | |
+
+Codes come from the resolved status categories (`mappings.statuses`), never
+from status IDs. The note has no legend; the codes are listed above. Long histories wrap at 20 codes per line and are never
+truncated; the note box grows to fit. A capped window says so (`latest 10 of
+12 executions (max runs)`). Without executions in the window the note says
+`No executions in the history window.` and names the latest known result, if
+any. On grey because of too few conclusive executions, the note also gives the
+minimum. Pass rate, diagnosis, confidence, and coverage are in the Latest
+Status note and Stability Details.
 
 The XML report has no Overview worksheet, so this colouring is XLSX-only;
 Stability Details keep the colours below in both formats.
@@ -782,8 +841,8 @@ ID, sorted by ID.
 
 Then, for every configured application × platform combination (limited by
 `filters.*` when set), in configuration order: Latest Status, Latest Result
-(UTC), Executions, Pass Rate, Failure Rate, Automation Issue Rate, Diagnosis,
-Confidence, Coverage, and Blocked Reason (when `report.blocked_reason.enabled`).
+(UTC), Executions, Pass Rate, Failure Rate, Automation Issue Rate, Known Issue
+Count, Diagnosis, Confidence, Coverage, and Blocked Reason (when `report.blocked_reason.enabled`).
 Each combination is analyzed independently.
 `No History` means the case was not in any collected run of that
 combination; when a resolved applicability value excludes the application,
@@ -797,7 +856,7 @@ bands above):
 |---|---|
 | Green | Stable / Passed |
 | Yellow | Inconsistent, Automation Issue / Automation Issue |
-| Red | Failure Evidence, Failure + Automation Issue / Failed. Failed executions do **not** confirm an application defect. |
+| Red | Failure Evidence, Failure + Automation Issue / Failed, Known Issue. Failed executions do **not** confirm an application defect; Known Issue executions do. |
 | Neutral | N/A, Not Run, Not Run in Window, Insufficient History, Partial, Applicability Unresolved, No History |
 
 **`Report Info` worksheet**: project ID, collection mode and selection,
@@ -1315,8 +1374,8 @@ tests/integration/   reserved for opt-in live tests
   with one outside the configured filters, are only counted in `Report Info`
   (separately), not shown in combination columns.
 - The Overview background shows the historical Pass Rate, not the latest
-  status or the diagnosis: automation issues lower the Pass Rate like
-  failures, so check the note or Stability Details to tell them apart. A
+  status or the diagnosis: automation issues and known issues lower the Pass
+  Rate like failures, so check the note or Stability Details to tell them apart. A
   history whose conclusive executions all passed but that also has
   unclassified statuses is diagnosed Insufficient History yet shown green
   once it has enough conclusive executions.

@@ -94,11 +94,17 @@ class OverviewTests(unittest.TestCase):
         comments = [cell.comment for row in rows.values() for cell in row.values() if cell.comment]
         self.assertTrue(comments)
         base = ["Diagnosis", "Confidence", "Executions", "Pass rate", "Coverage", "Latest result"]
-        rate = ["Pass rate", "Executions", "Diagnosis", "Confidence", "Coverage"]
-        allowed = (base, [*base, "Blocked reason"], rate, [*rate, "Grey"],
-                   ["No collected run of this application/platform included the case."])  # fmt: skip
+        no_run = ["No collected run of this application/platform included the case."]
+        allowed = (base, [*base, "Blocked reason"], no_run)
         for comment in comments:
+            if comment.startswith(("Recent executions", "No executions")):
+                continue  # Pass Rate notes: see OverviewPassRateTests
             self.assertIn([line.split(":", 1)[0] for line in comment.splitlines()], allowed)
+        rate_notes = [row[RATE].comment for row in rows.values()]
+        self.assertTrue(all(note.startswith(("Recent executions", "No executions")) for note in rate_notes))
+        for note in rate_notes:
+            for repeated in ("Pass rate", "Diagnosis", "Confidence", "Coverage"):
+                self.assertNotIn(repeated, note)
 
 
 class OverviewPassRateTests(unittest.TestCase):
@@ -128,19 +134,19 @@ class OverviewPassRateTests(unittest.TestCase):
         self.assertEqual((cell.value, cell.style), (0.0, "overview_neutral"))
         self.assertEqual(
             cell.comment.splitlines(),
-            ["Pass rate: 0.0% (0 of 2 conclusive executions passed)", "Executions: 2",
-             "Diagnosis: Failure Evidence", "Confidence: Low", "Coverage: Complete",
+            ["Recent executions (oldest → newest):", "F F", "2 execution(s); latest: Failed",
              "Grey: fewer than 5 conclusive executions"],
         )  # fmt: skip
 
     def test_notes_without_a_rate_or_history(self):
         _, rows = overview()
-        self.assertEqual(
-            rows[107][RATE].comment.splitlines()[0], "Pass rate: n/a (no conclusive executions in the window)"
-        )
+        self.assertEqual(rows[107][RATE].comment.splitlines()[0], "Recent executions (oldest → newest):")
+        self.assertEqual(rows[107][RATE].comment.splitlines()[1], "B")
         self.assertNotIn("Grey", rows[107][RATE].comment)
         no_history = rows[108][RATE]
-        self.assertEqual((no_history.value, no_history.style, no_history.comment), (None, "overview_neutral", None))
+        self.assertEqual((no_history.value, no_history.style), (None, "overview_neutral"))
+        no_run = "No collected run of this application/platform included the case."
+        self.assertEqual(no_history.comment.splitlines(), ["No executions in the history window.", no_run])
 
 
 class CaseColumnTests(unittest.TestCase):
@@ -214,7 +220,10 @@ class XmlCompatibilityTests(unittest.TestCase):
         )
 
     def test_stability_worksheet_is_unchanged(self):
-        """Snapshot generated before XLSX support was added; since extended only by the Test Case Title column."""
+        """Snapshot generated before XLSX support was added.
+
+        Since extended only by the Test Case Title and Known Issue Count columns.
+        """
         xml = self.render()
         sheet = re.search(r' <Worksheet ss:Name="Stability">.*? </Worksheet>\n', xml, re.S).group(0)
         self.assertEqual(sheet, SNAPSHOT.read_text(encoding="utf-8"))

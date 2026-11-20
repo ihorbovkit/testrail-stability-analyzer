@@ -25,9 +25,15 @@ API = "https://example.testrail.io/index.php?/api/v2/"
 STATUSES = [
     *payloads.STATUSES,
     payloads.status(8, "custom_status3", "Mystery", is_system=False),
+    payloads.status(9, "triage", "Known Issue", is_system=False),
 ]
-STATUS_MAPPINGS = {"automation_issue": ["custom_status1"], "not_applicable": ["custom_status2"]}
+STATUS_MAPPINGS = {
+    "automation_issue": ["custom_status1"],
+    "not_applicable": ["custom_status2"],
+    "known_issue": ["triage"],
+}
 PASSED, BLOCKED, UNTESTED, RETEST, FAILED, AUTOMATION_ISSUE, NOT_APPLICABLE, MYSTERY = 1, 2, 3, 4, 5, 6, 7, 8
+KNOWN_ISSUE = 9
 
 
 def days_ago(days, seconds=0):

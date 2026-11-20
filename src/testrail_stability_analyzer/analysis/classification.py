@@ -1,7 +1,9 @@
 """Deterministic diagnosis and confidence for one case/application/platform history.
 
-Rules are applied in order; the first match wins (P = passed, F = failed,
-A = automation issue, E = P + F + A, n = ``analysis.min_executions``):
+Rules are applied in order; the first match wins (P = passed, F = failed plus
+known issue, A = automation issue, E = P + F + A, n = ``analysis.min_executions``).
+A known issue (confirmed product defect) is weighed exactly like a failed
+execution; only the reasons name it separately:
 
 1. ``not_applicable``: the history state is not applicable.
 2. ``partial``: coverage is partial, results are incomplete, or the window was interrupted.
@@ -73,8 +75,9 @@ def _diagnosis(
         return Diagnosis.INSUFFICIENT_HISTORY, (
             f"no conclusive execution among {m.executions} execution(s) in the window",
         )
+    known = f", {m.known_issue} known issue(s)" if m.known_issue else ""
     summary = (
-        f"{m.passed} passed, {m.failed} failed, {m.automation_issue} automation issue(s) "
+        f"{m.passed} passed, {m.failed} failed, {m.automation_issue} automation issue(s){known} "
         f"in {evidence} conclusive execution(s)"
     )
     if m.passed == evidence:
@@ -89,12 +92,14 @@ def _diagnosis(
                 f"{m.unknown} execution(s) with an unclassified status; stability is not established",
             )
         return Diagnosis.STABLE, (summary,)
-    if m.passed and m.failed:
+    if m.passed and m.failures:
         return Diagnosis.INCONSISTENT, (summary, "mixed results do not by themselves prove flakiness")
-    if m.automation_issue and not m.failed:
+    if m.automation_issue and not m.failures:
         return Diagnosis.AUTOMATION_ISSUE_EVIDENCE, (summary,)
     if m.automation_issue:
         return Diagnosis.MIXED_FAILURE_EVIDENCE, (summary,)
+    if not m.failed:
+        return Diagnosis.APPLICATION_FAILURE_EVIDENCE, (summary, "known issue results are confirmed product defects")
     return Diagnosis.APPLICATION_FAILURE_EVIDENCE, (summary, "failed results do not confirm an application defect")
 
 

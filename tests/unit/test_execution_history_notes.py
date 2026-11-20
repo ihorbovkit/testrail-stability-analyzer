@@ -118,6 +118,14 @@ class EmptyHistoryTests(unittest.TestCase):
             ["No executions in the history window.", f"Latest known result: Known Issue on {date}, before the window."],
         )
 
+    def test_undated_latest_result_is_not_called_before_the_window(self):
+        undated = [outcome(500, 100, rec(1, KNOWN_ISSUE, None))]  # no timestamp: kept as latest, not in the window
+        lines = note(undated)
+        self.assertEqual(
+            lines, ["No executions in the history window.", "Latest known result: Known Issue, execution date unknown."]
+        )
+        self.assertNotIn("before the window", "\n".join(lines))
+
     def test_combination_without_history(self):
         lines = note(runs([PASSED] * 5), "App B", "Platform Y")
         no_run = "No collected run of this application/platform included the case."

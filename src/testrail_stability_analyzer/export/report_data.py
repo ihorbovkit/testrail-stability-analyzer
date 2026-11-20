@@ -640,8 +640,14 @@ def _pass_rate_comment(analysis: KeyAnalysis, min_executions: int) -> str:
     if not window:
         lines = [NO_EXECUTIONS_NOTE]
         if m.latest_category is not None:
-            date = "" if m.latest_executed_on is None else f" on {m.latest_executed_on.astimezone(UTC):%Y-%m-%d}"
-            lines.append(f"Latest known result: {_execution_code(m.latest_category)[1]}{date}, before the window.")
+            status = _execution_code(m.latest_category)[1]
+            if m.latest_executed_on is None:  # undated: no evidence that it lies before the window
+                lines.append(f"Latest known result: {status}, execution date unknown.")
+            else:
+                lines.append(
+                    f"Latest known result: {status} on {m.latest_executed_on.astimezone(UTC):%Y-%m-%d}, "
+                    "before the window."
+                )
     else:
         codes = [_execution_code(outcome.category) for outcome in reversed(window)]
         sequence = [code for code, _ in codes]
